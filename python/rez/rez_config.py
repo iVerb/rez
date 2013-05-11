@@ -2031,13 +2031,32 @@ def process_commands(cmds):
 			pkgname = None
 
 		if cmd.split()[0] == "export":
+			basecmd = cmd[len("export"):]
+
+			def parse_export(op):
+				var_val = basecmd.split(op)
+				if (len(var_val) != 2):
+					raise PkgCommandError("invalid command:'" + cmd + "'")
+				varname = var_val[0].split()[0]
+				val = var_val[1]
+				return varname, val
 
 			# parse name, value
-			var_val = cmd[len("export"):].split('=')
-			if (len(var_val) != 2):
-				raise PkgCommandError("invalid command:'" + cmd + "'")
-			varname = var_val[0].split()[0]
-			val = var_val[1]
+			# for custom append and prepend modes we produce the result that self-referencing
+			# would produce
+			if ('=' in basecmd):
+				# assign
+				varname, val = parse_export('=')
+
+			if ('>>' in basecmd):
+				# append
+				varname, val = parse_export('>>')
+				val = '$' + varname + ':' + val.lstrip()
+
+			if ('<<' in basecmd):
+				# prepend
+				varname, val = parse_export('<<')
+				val = val.rstrip() + ':$' + varname 
 
 			# has value already been set?
 			val_is_set = (varname in set_vars)
