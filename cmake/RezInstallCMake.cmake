@@ -10,6 +10,10 @@
 #
 # Arguments:
 #
+# DEFAULT ARG: AUTO - if enabled, rez will attempt to discover the
+#               standard locations for each named argument.  Named
+#               arguments will override this automatic discovery.
+#
 # DESTINATION: 	relative subdirectory to install the cmake file into.
 #
 # INCLUDE_DIRS: include directories. Any entries that are non-absolute paths are
@@ -30,6 +34,38 @@ endif(NOT REZ_BUILD_ENV)
 
 include(Utils)
 
+#
+# res_install_cmake specific utility macros
+#
+
+# Append a directory to relative paths found in input_dirs
+macro(append_to_relative_dirs append_dir input_dirs output_dirs)
+	# Use a temporary variable to allow input_dirs to be the same
+	# variable as output_dirs, for in-line replacement
+	set(_temp_input_dirs)
+	foreach(_dir ${input_dirs})
+		string(REGEX MATCH "^/" is_abs ${_dir})
+		if(is_abs)
+			list(APPEND _temp_input_dirs "${_dir}")
+		else()
+			list(APPEND _temp_input_dirs "${append_dir}/${_dir}")
+		endif()
+	endforeach()
+	set(${output_dirs} ${_temp_input_dirs})
+endmacro()
+
+# Find dynamic libraries in the library_dirs directory.
+macro(find_dynamic_libs library_dirs output_libraries)
+    set(_exts so dylib bundle)
+    foreach(_dir in ${library_dirs})
+        foreach(_ext ${_exts})
+            file(GLOB _libs ${_dir}/*.${_ext})
+            if(_libs)
+                list(APPEND ${output_libraries} "${_libs}")
+            endif()
+        endforeach()
+    endforeach()
+endmacro()
 
 macro(rez_install_cmake)
 
@@ -42,67 +78,114 @@ macro(rez_install_cmake)
 		""
 		${ARGN})
 
+	#
+	# Test required arguments
+	list(GET INSTCM_DEFAULT_ARGS 0 do_auto)
 	list(GET INSTCM_DESTINATION 0 dest_dir)
-	if(NOT dest_dir)
+	if(NOT do_auto AND NOT dest_dir)
 		message(FATAL_ERROR "need to specify DESTINATION in call to install_cmake")
-	endif(NOT dest_dir)
+	endif()
+
+	# Defer cmake file creation until after install, so that if do_auto is
+	# true, it will be able to correctly find the installed libraries.
+	#
+	# We always defer this macro, because it keeps the code succinct.
+	# NOTE: this does somewhat break backward compatibility in that
+	# 	    the cmake file is never written to the build directory.
+	set(auto_args "${ARGN} PROJECT_NAME ${REZ_BUILD_PROJECT_NAME}")
+	install(CODE "
+		set(REZ_BUILD_ENV 1)
+		list(APPEND CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH})
+		include(RezInstallCMake)
+		_rez_install_auto_cmake(${auto_args})
+	    set(REZ_BUILD_ENV 0)
+	")
+endmacro(rez_install_cmake)
 
 
-	string(TOUPPER ${REZ_BUILD_PROJECT_NAME} UPNAME)
-	set(_envtok "ENV{") # trick for escape shenannigans
-	set(root_dir "$${_envtok}REZ_${UPNAME}_ROOT}")
-
+macro(_rez_install_auto_cmake)
 
 	#
-	# point non-absolute paths at the install dir for this package
+	# parse args
 	#
 
-	foreach(inc_dir ${INSTCM_INCLUDE_DIRS})
-		string(REGEX MATCH "^/" is_abs ${inc_dir})
-		if(is_abs)
-			list(APPEND inc_dirs ${inc_dir})
-		else(is_abs)
-			list(APPEND inc_dirs ${root_dir}/${inc_dir})
-		endif(is_abs)
-	endforeach(inc_dir ${INSTCM_INCLUDE_DIRS})
+	message(STATUS "INSTALLING AUTO CMAKE SCRIPT WITH THE ARGUMENTS: ${ARGN}")
 
-	foreach(lib_dir ${INSTCM_LIBRARY_DIRS})
-		string(REGEX MATCH "^/" is_abs ${lib_dir})
-		if(is_abs)
-			list(APPEND lib_dirs ${lib_dir})
-		else(is_abs)
-			list(APPEND lib_dirs ${root_dir}/${lib_dir})
-		endif(is_abs)
-	endforeach(lib_dir ${INSTCM_LIBRARY_DIRS})
+	parse_arguments(INSTCM
+		"DESTINATION;INCLUDE_DIRS;LIBRARY_DIRS;LIBRARIES;DEFINITIONS;PROJECT_NAME"
+		""
+		${ARGN})
 
+	list(GET INSTCM_DEFAULT_ARGS 0 do_auto)
+	list(GET INSTCM_DESTINATION 0 dest_dir)
+	set(projname ${INSTCM_PROJECT_NAME})
+	string(TOUPPER ${projname} UPNAME)
+	set(root_dir "\$ENV{REZ_${UPNAME}_ROOT}")
+
+	#
+	# Populate auto arguments
+	#
+
+	if(do_auto)
+		if(NOT dest_dir)
+			set(dest_dir cmake)
+		endif()
+		if(NOT INSTCM_INCLUDE_DIRS)
+			set(INSTCM_INCLUDE_DIRS include)
+		endif()
+		if(NOT INSTCM_LIBRARY_DIRS)
+			set(INSTCM_LIBRARY_DIRS lib)
+		endif()
+	else()
+		#
+		# point non-absolute paths at the install dir for this package
+		#
+
+	endif()
+
+	#
+	# process non-absolute paths to point at the install dir for this package
+	#
+
+	append_to_relative_dirs(\${root_dir} "${INSTCM_INCLUDE_DIRS}" inc_dirs)
+	append_to_relative_dirs(\${root_dir} "${INSTCM_LIBRARY_DIRS}" lib_dirs)
+	append_to_relative_dirs(${CMAKE_INSTALL_PREFIX} "${INSTCM_LIBRARY_DIRS}" lib_installed_dirs)
+
+	if(do_auto AND NOT INSTCM_LIBRARIES)
+		# Find the dynamic libs
+		find_dynamic_libs(${lib_installed_dirs} libraries)
+
+		# Replace absolute paths with the install dir variable.
+		string(REPLACE ${CMAKE_INSTALL_PREFIX} "${root_dir}" libraries "${libraries}")
+	else()
+		set(libraries "${INSTCM_LIBRARIES}")
+	endif()
 
 	#
 	# generate the cmake file
 	#
 
-	set(projname $ENV{REZ_BUILD_PROJECT_NAME})
+	set(abs_dest_dir "${CMAKE_INSTALL_PREFIX}/${dest_dir}")
 	set(cmake_file ${projname}.cmake)
+	set(cmake_path "${abs_dest_dir}/${cmake_file}")
 
-	add_custom_command(
-			OUTPUT ${dest_dir}/${cmake_file}
-			COMMAND ${CMAKE_COMMAND} -E make_directory ${dest_dir}
-			COMMAND echo set(${projname}_INCLUDE_DIRS ${inc_dirs}) > ${dest_dir}/${cmake_file}
-			COMMAND echo set(${projname}_LIBRARY_DIRS ${lib_dirs}) >> ${dest_dir}/${cmake_file}
-			COMMAND echo set(${projname}_LIBRARIES ${INSTCM_LIBRARIES}) >> ${dest_dir}/${cmake_file}
-			COMMAND echo set(${projname}_DEFINITIONS ${INSTCM_DEFINITIONS}) >> ${dest_dir}/${cmake_file}
-			COMMENT "Creating ${dest_dir}/${cmake_file}"
-			VERBATIM
-		)
+	execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory "${abs_dest_dir}")
 
-	add_custom_target ( cmake ALL DEPENDS ${dest_dir}/${cmake_file} )
+	# This won't be made with the correct permissions.  Not sure how to fix this.
+	# PERMISSIONS ${REZ_FILE_INSTALL_PERMISSIONS}
+	file(WRITE ${cmake_path})
+	file(APPEND ${cmake_path} "set(${projname}_INCLUDE_DIRS \"${inc_dirs}\")\n")
+	file(APPEND ${cmake_path} "set(${projname}_LIBRARY_DIRS \"${lib_dirs}\")\n")
+	file(APPEND ${cmake_path} "set(${projname}_LIBRARIES \"${libraries}\")\n")
+	file(APPEND ${cmake_path} "set(${projname}_DEFINITIONS \"${INSTCM_DEFINITIONS}\")\n")
 
-	install(
-		FILES ${CMAKE_CURRENT_BINARY_DIR}/${dest_dir}/${cmake_file}
-		DESTINATION ${dest_dir}
-		PERMISSIONS ${REZ_FILE_INSTALL_PERMISSIONS}
-	)
+	file(APPEND ${cmake_path} "# Set these as environment variables as well\n")
+	file(APPEND ${cmake_path} "set(ENV{${projname}_INCLUDE_DIRS} \"\${${projname}_INCLUDE_DIRS}\")\n")
+	file(APPEND ${cmake_path} "set(ENV{${projname}_LIBRARY_DIRS} \"\${${projname}_LIBRARY_DIRS}\")\n")
+	file(APPEND ${cmake_path} "set(ENV{${projname}_LIBRARIES} \"\${${projname}_LIBRARIES}\")\n")
+	file(APPEND ${cmake_path} "set(ENV{${projname}_DEFINITIONS} \"\${${projname}_DEFINITIONS}\")\n")
 
-endmacro(rez_install_cmake)
+endmacro(_rez_install_auto_cmake)
 
 
 
