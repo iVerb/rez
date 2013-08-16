@@ -109,8 +109,6 @@ macro(_rez_install_auto_cmake)
 	# parse args
 	#
 
-	message(STATUS "INSTALLING AUTO CMAKE SCRIPT WITH THE ARGUMENTS: ${ARGN}")
-
 	parse_arguments(INSTCM
 		"DESTINATION;INCLUDE_DIRS;LIBRARY_DIRS;LIBRARIES;DEFINITIONS;PROJECT_NAME"
 		""
@@ -143,6 +141,16 @@ macro(_rez_install_auto_cmake)
 
 	endif()
 
+	# Report to the user that the cmake script is being installed, and where
+	# In order to do this properly, we must first make the directory where
+	# cmake will be installed
+	set(abs_dest_dir "${CMAKE_INSTALL_PREFIX}/${dest_dir}")
+	execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory "${abs_dest_dir}")
+
+	set(cmake_file ${projname}.cmake)
+	set(cmake_path "${abs_dest_dir}/${cmake_file}")
+	message(STATUS "Installing: cmake script to ${cmake_path}")
+
 	#
 	# process non-absolute paths to point at the install dir for this package
 	#
@@ -165,11 +173,6 @@ macro(_rez_install_auto_cmake)
 	# generate the cmake file
 	#
 
-	set(abs_dest_dir "${CMAKE_INSTALL_PREFIX}/${dest_dir}")
-	set(cmake_file ${projname}.cmake)
-	set(cmake_path "${abs_dest_dir}/${cmake_file}")
-
-	execute_process(COMMAND ${CMAKE_COMMAND} -E make_directory "${abs_dest_dir}")
 
 	# This won't be made with the correct permissions.  Not sure how to fix this.
 	# PERMISSIONS ${REZ_FILE_INSTALL_PERMISSIONS}
