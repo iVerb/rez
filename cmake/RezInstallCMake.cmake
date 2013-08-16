@@ -26,6 +26,7 @@
 #
 # DEFINITIONS: 	extra cflags.
 #
+# CUSTOM_STRING: Any additional data to be written to the cmake file.
 
 
 if(NOT REZ_BUILD_ENV)
@@ -54,17 +55,40 @@ macro(append_to_relative_dirs append_dir input_dirs output_dirs)
 	set(${output_dirs} ${_temp_input_dirs})
 endmacro()
 
-# Find dynamic libraries in the library_dirs directory.
-macro(find_dynamic_libs library_dirs output_libraries)
-    set(_exts so dylib bundle)
-    foreach(_dir in ${library_dirs})
-        foreach(_ext ${_exts})
+# Find libraries that match the given extensions
+macro(find_libs extensions library_dirs output_libraries)
+	set(output_libraries)
+    foreach(_dir ${library_dirs})
+        foreach(_ext ${extensions})
             file(GLOB _libs ${_dir}/*.${_ext})
             if(_libs)
                 list(APPEND ${output_libraries} "${_libs}")
             endif()
         endforeach()
     endforeach()
+endmacro()
+
+# Find generic dynamic libraries
+macro(find_dynamic_libs library_dirs output_libraries)
+    set(_exts so dylib bundle)
+    find_libs("${_exts}" "${library_dirs}" _libraries)
+    set(${output_libraries} "${_libraries}")
+endmacro()
+
+# Find generic static libraries
+macro(find_static_libs library_dirs output_libraries)
+	set(_libraries)
+    set(_exts lib a)
+    find_libs("${_exts}" "${library_dirs}" _libraries)
+    set(${output_libraries} "${_libraries}")
+endmacro()
+
+# Find all generic libraries
+macro(find_all_libs library_dirs output_libraries)
+	set(_libraries)
+    set(_exts lib a so dylib bundle)
+    find_libs("${_exts}" "${library_dirs}" _libraries)
+    set(${output_libraries} "${_libraries}")
 endmacro()
 
 macro(rez_install_cmake)
@@ -74,7 +98,7 @@ macro(rez_install_cmake)
 	#
 
 	parse_arguments(INSTCM
-		"DESTINATION;INCLUDE_DIRS;LIBRARY_DIRS;LIBRARIES;DEFINITIONS"
+		"DESTINATION;INCLUDE_DIRS;LIBRARY_DIRS;LIBRARIES;DEFINITIONS;CUSTOM_STRING"
 		""
 		${ARGN})
 
@@ -110,15 +134,15 @@ macro(_rez_install_auto_cmake)
 	#
 
 	parse_arguments(INSTCM
-		"DESTINATION;INCLUDE_DIRS;LIBRARY_DIRS;LIBRARIES;DEFINITIONS;PROJECT_NAME"
+		"DESTINATION;INCLUDE_DIRS;LIBRARY_DIRS;LIBRARIES;DEFINITIONS;PROJECT_NAME;CUSTOM_STRING"
 		""
 		${ARGN})
 
 	list(GET INSTCM_DEFAULT_ARGS 0 do_auto)
 	list(GET INSTCM_DESTINATION 0 dest_dir)
 	set(projname ${INSTCM_PROJECT_NAME})
-	string(TOUPPER ${projname} UPNAME)
-	set(root_dir "\$ENV{REZ_${UPNAME}_ROOT}")
+	string(TOUPPER ${projname} upper_projname)
+	set(root_dir "\$ENV{REZ_${upper_projname}_ROOT}")
 
 	#
 	# Populate auto arguments
@@ -159,14 +183,24 @@ macro(_rez_install_auto_cmake)
 	append_to_relative_dirs(\${root_dir} "${INSTCM_LIBRARY_DIRS}" lib_dirs)
 	append_to_relative_dirs(${CMAKE_INSTALL_PREFIX} "${INSTCM_LIBRARY_DIRS}" lib_installed_dirs)
 
-	if(do_auto AND NOT INSTCM_LIBRARIES)
-		# Find the dynamic libs
-		find_dynamic_libs(${lib_installed_dirs} libraries)
 
-		# Replace absolute paths with the install dir variable.
-		string(REPLACE ${CMAKE_INSTALL_PREFIX} "${root_dir}" libraries "${libraries}")
+	# Find all library names/paths
+	if(do_auto AND NOT INSTCM_LIBRARIES)
+		find_all_libs(${lib_installed_dirs} all_library_paths)
+		set(library_names)
+		foreach(_lib ${all_library_paths})
+            get_filename_component(lib_name ${_lib} NAME_WE)
+            list(APPEND library_names "${lib_name}")
+        endforeach()
+        if(library_names)
+	        list(REMOVE_DUPLICATES library_names)
+	    endif()
+
+		find_static_libs(${lib_installed_dirs} static_library_paths)
+		string(REPLACE ${CMAKE_INSTALL_PREFIX} "${root_dir}" static_library_paths "${static_library_paths}")
 	else()
-		set(libraries "${INSTCM_LIBRARIES}")
+		set(library_names "${INSTCM_LIBRARIES}")
+		set(static_library_paths)
 	endif()
 
 	#
@@ -179,18 +213,29 @@ macro(_rez_install_auto_cmake)
 	file(WRITE ${cmake_path})
 	file(APPEND ${cmake_path} "set(${projname}_INCLUDE_DIRS \"${inc_dirs}\")\n")
 	file(APPEND ${cmake_path} "set(${projname}_LIBRARY_DIRS \"${lib_dirs}\")\n")
-	file(APPEND ${cmake_path} "set(${projname}_LIBRARIES \"${libraries}\")\n")
+	file(APPEND ${cmake_path} "set(${projname}_LIBRARIES \"${library_names}\")\n")
 	file(APPEND ${cmake_path} "set(${projname}_DEFINITIONS \"${INSTCM_DEFINITIONS}\")\n")
+	file(APPEND ${cmake_path} "\n# Explicit fullpath static libraries.\n")
+	foreach(_lib ${static_library_paths})
+		get_filename_component(_lib_name ${_lib} NAME_WE)
+		file(APPEND ${cmake_path} "set(${projname}_${_lib_name}_LIBRARY \"${_lib}\")\n")
+	endforeach()
 
-	file(APPEND ${cmake_path} "# Set these as environment variables as well\n")
-	file(APPEND ${cmake_path} "set(ENV{${projname}_INCLUDE_DIRS} \"\${${projname}_INCLUDE_DIRS}\")\n")
-	file(APPEND ${cmake_path} "set(ENV{${projname}_LIBRARY_DIRS} \"\${${projname}_LIBRARY_DIRS}\")\n")
-	file(APPEND ${cmake_path} "set(ENV{${projname}_LIBRARIES} \"\${${projname}_LIBRARIES}\")\n")
-	file(APPEND ${cmake_path} "set(ENV{${projname}_DEFINITIONS} \"\${${projname}_DEFINITIONS}\")\n")
+	file(APPEND ${cmake_path} "\n# Set these as environment variables as well\n")
+	file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_INCLUDE_DIRS} \"\${${projname}_INCLUDE_DIRS}\")\n")
+	file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_LIBRARY_DIRS} \"\${${projname}_LIBRARY_DIRS}\")\n")
+	file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_LIBRARIES} \"\${${projname}_LIBRARIES}\")\n")
+	file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_DEFINITIONS} \"\${${projname}_DEFINITIONS}\")\n")
+	foreach(_lib ${static_library_paths})
+		get_filename_component(_lib_name ${_lib} NAME_WE)
+		file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_${_lib_name}_LIBRARY} \"${_lib}\")\n")
+	endforeach()
+
+	if(INSTCM_CUSTOM_STRING)
+		file(APPEND ${cmake_path} "${INSTCM_CUSTOM_STRING}\n")
+	endif()
 
 endmacro(_rez_install_auto_cmake)
-
-
 
 
 
