@@ -1,6 +1,10 @@
 """
 Misc useful stuff.
 """
+import stat
+import sys
+
+WRITE_PERMS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 
 def gen_dotgraph_image(dot_data, out_file):
 
@@ -66,3 +70,17 @@ def readable_time_duration(secs, approx=True):
     if neg:
         s = '-' + s
     return s
+
+def hide_local_packages():
+    import os
+    localpath = os.getenv("REZ_LOCAL_PACKAGES_PATH").strip()
+    if localpath:
+        pkgpaths = os.getenv("REZ_PACKAGES_PATH","").strip().split(':')
+        if localpath in pkgpaths:
+            pkgpaths.remove(localpath)
+ 
+def remove_write_perms(path):
+    import os
+    st = os.stat(path)
+    mode = st.st_mode & ~WRITE_PERMS
+    os.chmod(path, mode)
