@@ -55,8 +55,27 @@ macro(append_to_relative_dirs append_dir input_dirs output_dirs)
 	set(${output_dirs} ${_temp_input_dirs})
 endmacro()
 
-# Find libraries that match the given extensions
-macro(find_libs extensions library_dirs output_libraries)
+# Find libraries for the given type
+# lib_type :
+#	The type of libraries to look for. Must be DYNAMIC, STATIC, or ALL.
+#
+# library_dirs :
+# 	The directories to search for libraries in.
+#
+# output_libraries
+#   The variable to save the results to.
+macro(find_libs lib_type library_dirs output_libraries)
+	set(${output_libraries})
+	if(${lib_type} STREQUAL DYNAMIC)
+	    set(extensions so dylib bundle)
+	elseif(${lib_type} STREQUAL STATIC)
+	    set(extensions lib a)
+	elseif(${lib_type} STREQUAL ALL)
+	    set(extensions lib a so dylib bundle)
+	else()
+		message(SEND_ERROR "Unknown lib_type ${lib_type}")
+	endif()
+
 	set(output_libraries)
     foreach(_dir ${library_dirs})
         foreach(_ext ${extensions})
@@ -68,28 +87,6 @@ macro(find_libs extensions library_dirs output_libraries)
     endforeach()
 endmacro()
 
-# Find generic dynamic libraries
-macro(find_dynamic_libs library_dirs output_libraries)
-    set(_exts so dylib bundle)
-    find_libs("${_exts}" "${library_dirs}" _libraries)
-    set(${output_libraries} "${_libraries}")
-endmacro()
-
-# Find generic static libraries
-macro(find_static_libs library_dirs output_libraries)
-	set(_libraries)
-    set(_exts lib a)
-    find_libs("${_exts}" "${library_dirs}" _libraries)
-    set(${output_libraries} "${_libraries}")
-endmacro()
-
-# Find all generic libraries
-macro(find_all_libs library_dirs output_libraries)
-	set(_libraries)
-    set(_exts lib a so dylib bundle)
-    find_libs("${_exts}" "${library_dirs}" _libraries)
-    set(${output_libraries} "${_libraries}")
-endmacro()
 
 macro(rez_install_cmake)
 
@@ -183,30 +180,50 @@ macro(_rez_install_auto_cmake)
 	append_to_relative_dirs(\${root_dir} "${INSTCM_LIBRARY_DIRS}" lib_dirs)
 	append_to_relative_dirs(${CMAKE_INSTALL_PREFIX} "${INSTCM_LIBRARY_DIRS}" lib_installed_dirs)
 
+	set(env_static_libraries)
+	set(rez_static_libraries)
+	set(env_dynamic_libraries)
+	set(rez_dynamic_libraries)
 
 	# Find all library names/paths
 	if(do_auto AND NOT INSTCM_LIBRARIES)
-		find_all_libs(${lib_installed_dirs} all_library_paths)
 		set(library_names)
-		foreach(_lib ${all_library_paths})
-            get_filename_component(lib_name ${_lib} NAME_WE)
-            list(APPEND library_names "${lib_name}")
-        endforeach()
+
+	    # Find the libraries.
+	    set(static_library_paths)
+		find_libs(STATIC ${lib_installed_dirs} static_library_paths)
+		string(REPLACE ${CMAKE_INSTALL_PREFIX} "${root_dir}" static_library_paths "${static_library_paths}")
+
+	    set(dynamic_library_paths)
+		find_libs(DYNAMIC ${lib_installed_dirs} dynamic_library_paths)
+		string(REPLACE ${CMAKE_INSTALL_PREFIX} "${root_dir}" dynamic_library_paths "${dynamic_library_paths}")
+
+		# Format them for writing to file.
+		foreach(_lib ${static_library_paths})
+			get_filename_component(_lib_name ${_lib} NAME_WE)
+            list(APPEND library_names "${_lib_name}")
+			set(rez_static_libraries "${rez_static_libraries}    set(${projname}_${_lib_name}_LIBRARY \"${_lib}\")\n")
+			set(env_static_libraries "${env_static_libraries}    set(ENV{REZ_${upper_projname}_${_lib_name}_LIBRARY} \"${_lib}\")\n")
+		endforeach()
+
+		foreach(_lib ${dynamic_library_paths})
+			get_filename_component(_lib_name ${_lib} NAME_WE)
+            list(APPEND library_names "${_lib_name}")
+			set(rez_dynamic_libraries "${rez_dynamic_libraries}    set(${projname}_${_lib_name}_LIBRARY \"${_lib}\")\n")
+			set(env_dynamic_libraries "${env_dynamic_libraries}    set(ENV{REZ_${upper_projname}_${_lib_name}_LIBRARY} \"${_lib}\")\n")
+		endforeach()
+
         if(library_names)
 	        list(REMOVE_DUPLICATES library_names)
 	    endif()
-
-		find_static_libs(${lib_installed_dirs} static_library_paths)
-		string(REPLACE ${CMAKE_INSTALL_PREFIX} "${root_dir}" static_library_paths "${static_library_paths}")
 	else()
 		set(library_names "${INSTCM_LIBRARIES}")
-		set(static_library_paths)
 	endif()
+
 
 	#
 	# generate the cmake file
 	#
-
 
 	# This won't be made with the correct permissions.  Not sure how to fix this.
 	# PERMISSIONS ${REZ_FILE_INSTALL_PERMISSIONS}
@@ -216,20 +233,23 @@ macro(_rez_install_auto_cmake)
 	file(APPEND ${cmake_path} "set(${projname}_LIBRARIES \"${library_names}\")\n")
 	file(APPEND ${cmake_path} "set(${projname}_DEFINITIONS \"${INSTCM_DEFINITIONS}\")\n")
 	file(APPEND ${cmake_path} "\n# Explicit fullpath static libraries.\n")
-	foreach(_lib ${static_library_paths})
-		get_filename_component(_lib_name ${_lib} NAME_WE)
-		file(APPEND ${cmake_path} "set(${projname}_${_lib_name}_LIBRARY \"${_lib}\")\n")
-	endforeach()
+	file(APPEND ${cmake_path} "if(${projname}_USE_STATIC)\n")
+	file(APPEND ${cmake_path} "${rez_static_libraries}\n")
+	file(APPEND ${cmake_path} "else()\n")
+	file(APPEND ${cmake_path} "${rez_dynamic_libraries}\n")
+	file(APPEND ${cmake_path} "endif()\n")
 
 	file(APPEND ${cmake_path} "\n# Set these as environment variables as well\n")
 	file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_INCLUDE_DIRS} \"\${${projname}_INCLUDE_DIRS}\")\n")
 	file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_LIBRARY_DIRS} \"\${${projname}_LIBRARY_DIRS}\")\n")
 	file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_LIBRARIES} \"\${${projname}_LIBRARIES}\")\n")
 	file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_DEFINITIONS} \"\${${projname}_DEFINITIONS}\")\n")
-	foreach(_lib ${static_library_paths})
-		get_filename_component(_lib_name ${_lib} NAME_WE)
-		file(APPEND ${cmake_path} "set(ENV{REZ_${upper_projname}_${_lib_name}_LIBRARY} \"${_lib}\")\n")
-	endforeach()
+
+	file(APPEND ${cmake_path} "if(${projname}_USE_STATIC)\n")
+	file(APPEND ${cmake_path} "${env_static_libraries}\n")
+	file(APPEND ${cmake_path} "else()\n")
+	file(APPEND ${cmake_path} "${env_dynamic_libraries}\n")
+	file(APPEND ${cmake_path} "endif()\n")
 
 	if(INSTCM_CUSTOM_STRING)
 		file(APPEND ${cmake_path} "${INSTCM_CUSTOM_STRING}\n")
