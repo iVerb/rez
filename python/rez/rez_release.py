@@ -728,7 +728,7 @@ register_release_mode('base', RezReleaseMode)
 # Subversion
 ##############################################################################
 
-class SvnValueCallback:
+class SvnValueCallback(object):
 	"""
 	simple functor class
 	"""
