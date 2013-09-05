@@ -218,9 +218,7 @@ class ConfigMetadata:
 		# commands
 		if "commands" in self.metadict:
 			self.commands = self.metadict["commands"]
-			if (type(self.commands) == str):
-				self.commands = [x for x in self.commands.split('\n') if x]
-			elif (type(self.commands) != list):
+			if (type(self.commands) != list):
 				raise ConfigMetadataError("package metafile '" + self.filename + \
 					"' contains non-list 'commands' node")
 			if (len(self.commands) == 0):
