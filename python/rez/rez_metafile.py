@@ -147,14 +147,24 @@ class ConfigMetadata(object):
 			if self.build_requires:
 				reqs += self.build_requires
 			if self.requires:
-				reqs += self.requires
+				reqs += [x for x in self.requires if '?' not in x]
 
 			if len(reqs) > 0:
 				return reqs
 			else:
 				return None
 		else:
-			return self.requires
+			if self.requires:
+				return [x for x in self.requires if '?' not in x]
+
+	def get_conditional_requires(self):
+		requires = self.requires
+		if requires:
+			for req in requires:
+				parts = req.split('?')
+				if len(parts) == 2:
+					conditionals = parts[1].split(',')
+					yield (parts[0], conditionals)
 
 	def get_build_requires(self):
 		"""

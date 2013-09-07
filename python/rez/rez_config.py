@@ -1645,11 +1645,27 @@ class _Configuration(object):
 								print str(config2)
 							elif (self.rctxt.verbosity == 2):
 								config2.dump()
-
+					
+					cond_requires = pkg.metadata.get_conditional_requires()
+					if cond_requires:
+						for pkg_str, conditionals in cond_requires:
+							# for now, do a simple check without verison
+							if set(conditionals).issubset(self.pkgs.keys()):
+								pkg_req = str_to_pkg_req(pkg_str)
+								if not config2:
+									config2 = self.copy()
+								config2.add_package(pkg_req, pkg)
+	
+								if (self.rctxt.verbosity != 0):
+									print "config after adding " + pkg.short_name() + \
+										"'s conditional required package " + pkg_req.short_name() + ':'
+								if (self.rctxt.verbosity == 1):
+									print str(config2)
+								elif (self.rctxt.verbosity == 2):
+									config2.dump()
 		if config2:
 			self.swap(config2)
 		return num
-
 
 	def add_transitive_dependencies(self):
 		"""
