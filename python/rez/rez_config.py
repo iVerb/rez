@@ -161,6 +161,9 @@ class ResolvedPackage(object):
 	def __str__(self):
 		return str([self.name, self.version, self.root])
 
+	def __repr__(self):
+		return "%s(%r, %r, %r)" % (self.__class__.__name__, self.name,
+								   self.version, self.root)
 
 class Resolver(object):
 	"""
@@ -1031,7 +1034,7 @@ class _Configuration(object):
 		# test to see what adding this package would do
 		result, pkg = self.test_pkg_req_add(pkg_req, True)
 
-		self._add_package_to_dot_graph(pkg_req.short_name(), result, pkg,
+		self._add_package_to_dot_graph(pkg_req.short_name(), pkg, result,
 									   parent_pkg, dot_connection_type)
 
 		if (result == _Configuration.ADDPKG_CONFLICT):
