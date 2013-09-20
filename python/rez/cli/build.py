@@ -178,6 +178,64 @@ def _get_variants(metadata, variant_nums):
     else:
         return [(-1, None)]
 
+def _download(url, file_name):
+    import urllib2
+
+    u = urllib2.urlopen(url)
+    f = open(file_name, 'wb')
+    meta = u.info()
+    file_size = int(meta.getheaders("Content-Length")[0])
+    print "Downloading: %s Bytes: %s" % (file_name, file_size)
+    
+    file_size_dl = 0
+    block_sz = 8192
+    while True:
+        buffer = u.read(block_sz)
+        if not buffer:
+            break
+    
+        file_size_dl += len(buffer)
+        f.write(buffer)
+        status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
+        status = status + chr(8)*(len(status)+1)
+        print status,
+    
+    f.close()
+
+def _source_archive_path(url):
+    from urlparse import urlparse
+    import posixpath
+    url_parts = urlparse(url)
+    archive = posixpath.basename(url_parts.path)
+    archive_dir = os.environ.get('REZ_BUILD_DOWNLOAD_CACHE', '.rez-downloads')
+    if not os.path.isdir(archive_dir):
+        os.makedirs(archive_dir)
+    return os.path.join(archive_dir, archive)
+
+def _extract_tar(tarpath):
+    import tarfile
+    print "extracting %s" % tarpath
+    tar = tarfile.open(tarpath)
+    try:
+        prefix = os.path.commonprefix(tar.getnames())
+        srcdir = 'src'
+        tar.extractall(srcdir)
+        return os.path.join(srcdir, prefix)
+    finally:
+        tar.close()
+        print "done"
+
+def _get_source(metadata):
+    source_url = metadata.metadict['source_url']
+    source_path = _source_archive_path(source_url)
+    if not os.path.isfile(source_path):
+        _download(source_url, source_path)
+    else:
+        print "Using cached archive %s" % source_path
+    # TODO: check sha1 of download
+    # TODO: option not to re-extract?
+    return _extract_tar(source_path)
+
 def _format_bash_command(args):
     def quote(arg):
         if ' ' in arg:
@@ -375,6 +433,9 @@ def command(opts):
         pass
         # TODO:
         #opts.vcs_metadata=`rez-$VCS-print-url`
+
+    if 'source_url' in metadata.metadict:
+        _get_source(metadata)
 
     build_dir_base = os.path.abspath("build")
     build_dir_id = os.path.join(build_dir_base, ".rez-build")
