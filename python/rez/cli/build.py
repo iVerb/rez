@@ -236,6 +236,44 @@ def _get_source(metadata):
     # TODO: option not to re-extract?
     return _extract_tar(source_path)
 
+def _write_cmakelist(install_commands, srcdir):
+    lines = ['custom_build ALL ' + install_commands[0]]
+    for line in install_commands[1:]:
+        if line.strip():
+            lines.append('  COMMAND ' + line)
+
+    text = """\
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
+
+include(RezBuild)
+
+rez_find_packages(PREFIX pkgs AUTO)
+
+# TODO: create a cmake variable for the extracted source directory and temp install directory
+  
+# trailing slash tells install to copy the directory contents
+set(REZ_INSTALL_DIR ${CMAKE_BINARY_DIR}/${REZ_BUILD_PROJECT_NAME}/)
+
+install( DIRECTORY ${REZ_INSTALL_DIR}
+  DESTINATION .
+)
+
+set(REZ_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/%s)
+
+# building in CMAKE_BINARY_DIR while providing the path to the source via REZ_SOURCE_DIR
+# allows build systems like automake / autoconf to perform out-of-source builds, e.g.
+# by calling ${REZ_SOURCE_DIR}/configure
+add_custom_target(
+  %s
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+# Create Cmake file
+rez_install_cmake(AUTO)""" % (srcdir, '\n'.join(lines))
+
+    with open('CMakeLists.txt', 'w') as f:
+        f.write(text)
+
 def _format_bash_command(args):
     def quote(arg):
         if ' ' in arg:
@@ -435,7 +473,11 @@ def command(opts):
         #opts.vcs_metadata=`rez-$VCS-print-url`
 
     if 'source_url' in metadata.metadict:
-        _get_source(metadata)
+        srcdir = _get_source(metadata)
+        if 'install_commands' in metadata.metadict:
+            install_commands = metadata.metadict['install_commands']
+            assert isinstance(install_commands, list)
+            _write_cmakelist(install_commands, srcdir)
 
     build_dir_base = os.path.abspath("build")
     build_dir_id = os.path.join(build_dir_base, ".rez-build")
