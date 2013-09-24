@@ -71,6 +71,8 @@ BUILD_SYSTEMS = {'eclipse' : "Eclipse CDT4 - Unix Makefiles",
                  'make' : "Unix Makefiles",
                  'xcode' : "Xcode"}
 
+# in python 2.7, this list is stored in hashlib.algorithms
+HASH_TYPES = ('md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512')
 #
 #-#################################################################################################
 # usage/parse args
@@ -182,27 +184,29 @@ def _download(url, file_name):
     import urllib2
 
     u = urllib2.urlopen(url)
-    f = open(file_name, 'wb')
-    meta = u.info()
-    file_size = int(meta.getheaders("Content-Length")[0])
-    print "Downloading: %s Bytes: %s" % (file_name, file_size)
-    
-    file_size_dl = 0
-    block_sz = 8192
-    while True:
-        buffer = u.read(block_sz)
-        if not buffer:
-            break
-    
-        file_size_dl += len(buffer)
-        f.write(buffer)
-        status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
-        status = status + chr(8)*(len(status)+1)
-        print status,
-    
-    f.close()
+
+    with open(file_name, 'wb') as f:
+        meta = u.info()
+        file_size = int(meta.getheaders("Content-Length")[0])
+        print "Downloading: %s Bytes: %s" % (file_name, file_size)
+
+        file_size_dl = 0
+        block_sz = 8192
+        while True:
+            buffer = u.read(block_sz)
+            if not buffer:
+                break
+
+            file_size_dl += len(buffer)
+            f.write(buffer)
+            status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
+            status = status + chr(8)*(len(status)+1)
+            print status,
 
 def _source_archive_path(url):
+    """
+    get the path for the local source archive
+    """
     from urlparse import urlparse
     import posixpath
     url_parts = urlparse(url)
@@ -213,6 +217,10 @@ def _source_archive_path(url):
     return os.path.join(archive_dir, archive)
 
 def _extract_tar(tarpath):
+    """
+    extract the tar file at the given path, returning the common prefix of all
+    paths in the archive
+    """
     import tarfile
     print "extracting %s" % tarpath
     tar = tarfile.open(tarpath)
@@ -225,22 +233,84 @@ def _extract_tar(tarpath):
         tar.close()
         print "done"
 
-def _get_source(metadata):
-    source_url = metadata.metadict['source_url']
+def _check_hash(source_path, checksum, hash_type):
+    import hashlib
+    hasher = hashlib.new(hash_type)
+    with open(source_path, 'rb') as f:
+        while True:
+            # read in 16mb blocks
+            buf = f.read(16 * 1024 * 1024)
+            if not buf:
+                break
+            hasher.update(buf)
+    real_checksum = hasher.hexdigest()
+    if checksum != real_checksum:
+        error("checksum mismatch: expected %s, got %s" % (real_checksum, checksum))
+        sys.exit(1)
+
+def _get_url(metadict):
+    """
+    Return (url, hash string, hash type) or None, if no url entry is present
+    """
+    import hashlib
+    url = metadict.get('url')
+    if url:
+        for hash_type in HASH_TYPES:
+            hash_str = metadict.get(hash_type)
+            if hash_str:
+                return url, hash_str, hash_type
+        error("when providing a url for external build you must also provide a "
+              "checksum entry (%s): %s" % (', '.join(HASH_TYPES), url))
+        sys.exit(1)
+
+def _get_source(source_url, checksum, hash_type):
+    """
+    Download and extract the source at the given url, caching it for reuse.
+    
+    Returns the common prefix of all folders in the source archive, or None if
+    the download was unsuccessful.
+    """
     source_path = _source_archive_path(source_url)
     if not os.path.isfile(source_path):
-        _download(source_url, source_path)
+        try:
+            _download(source_url, source_path)
+        except Exception as err:
+            print "error downloading %s: %s" % (source_url, err)
+            return
     else:
         print "Using cached archive %s" % source_path
-    # TODO: check sha1 of download
+    _check_hash(source_path, checksum, hash_type)
     # TODO: option not to re-extract?
     return _extract_tar(source_path)
 
-def _write_cmakelist(install_commands, srcdir):
+def _write_cmakelist(install_commands, srcdir, working_dir_mode):
+    assert not os.path.isabs(srcdir)
+    srcroot = os.path.split(srcdir)[0]
+    # there are different modes available for the current working directory
+    working_dir_mode = working_dir_mode.lower()
+    if working_dir_mode == 'source':
+        working_dir = "${REZ_SOURCE_DIR}"
+    elif working_dir_mode == 'source_root':
+        working_dir = "${REZ_SOURCE_ROOT}" 
+    elif working_dir_mode == 'build':
+        working_dir = "${CMAKE_BINARY_DIR}"
+    else:
+        error("Invalid option for 'working_dir': provide one of 'source', 'source_root', or 'build'")
+        sys.exit(1)
+
     lines = ['custom_build ALL ' + install_commands[0]]
     for line in install_commands[1:]:
         if line.strip():
             lines.append('  COMMAND ' + line)
+
+    import re
+    extra_cmake_commands = []
+    for line in install_commands:
+        for cmake_var in re.findall('\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}', line):
+            extra_cmake_commands.append('message("%s = ${%s}")' % (cmake_var, cmake_var))
+    if extra_cmake_commands:
+        extra_cmake_commands.insert(0, 'message("")')
+        extra_cmake_commands.append('message("")')
 
     text = """\
 CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
@@ -259,17 +329,21 @@ install( DIRECTORY ${REZ_INSTALL_DIR}
 )
 
 set(REZ_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/%s)
+set(REZ_SOURCE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/%s)
 
-# building in CMAKE_BINARY_DIR while providing the path to the source via REZ_SOURCE_DIR
-# allows build systems like automake / autoconf to perform out-of-source builds, e.g.
-# by calling ${REZ_SOURCE_DIR}/configure
+%s
+
 add_custom_target(
   %s
-  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  WORKING_DIRECTORY %s
 )
 
 # Create Cmake file
-rez_install_cmake(AUTO)""" % (srcdir, '\n'.join(lines))
+rez_install_cmake(AUTO)""" % (srcdir,
+                              srcroot,
+                              '\n'.join(extra_cmake_commands),
+                              '\n'.join(lines),
+                              working_dir)
 
     with open('CMakeLists.txt', 'w') as f:
         f.write(text)
@@ -480,12 +554,28 @@ def command(opts):
         url = vcs.get_url()
         opts.vcs_metadata = url if url else "(NONE)"
 
-    if 'source_url' in metadata.metadict:
-        srcdir = _get_source(metadata)
-        if 'install_commands' in metadata.metadict:
-            install_commands = metadata.metadict['install_commands']
-            assert isinstance(install_commands, list)
-            _write_cmakelist(install_commands, srcdir)
+    if 'external_build' in metadata.metadict:
+        # cleanup prevous runs
+        if os.path.exists('CMakeLists.txt'):
+            os.remove('CMakeLists.txt')
+        
+        build_data = metadata.metadict['external_build']
+        url = _get_url(build_data)
+        if url:
+            urls = [url]
+        else:
+            urls = [_get_url(x) for x in build_data.get('urls', [])]
+        if urls:
+            for url, hash_str, hash_type in urls:
+                srcdir = _get_source(url, hash_str, hash_type)
+                if srcdir is None:
+                    continue
+                if 'commands' in build_data:
+                    install_commands = build_data['commands']
+                    assert isinstance(install_commands, list)
+                    working_dir = build_data.get('working_dir', 'source')
+                    _write_cmakelist(install_commands, srcdir, working_dir)
+                    break
 
     build_dir_base = os.path.abspath("build")
     build_dir_id = os.path.join(build_dir_base, ".rez-build")
