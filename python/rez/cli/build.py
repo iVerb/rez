@@ -289,7 +289,7 @@ def _format_bash_command(args):
         fi
         """ % {'cmd' : cmd})
 
-def get_cmake_args(build_system, build_target):
+def get_cmake_args(build_system, build_target, release=False):
     cmake_arguments = ["-DCMAKE_SKIP_RPATH=1"]
 
     # Rez custom module location
@@ -302,6 +302,15 @@ def get_cmake_args(build_system, build_target):
     cmake_arguments.extend(["-G", build_system])
 
     cmake_arguments.append("-DCMAKE_BUILD_TYPE=%s" % build_target)
+
+    if release:
+        if os.environ.get('REZ_IN_REZ_RELEASE') != "1":
+            result = raw_input("You are attempting to install centrally outside "
+                               "of rez-release: do you really want to do this (y/n)? ")
+            if result != "y":
+                sys.exit(1)
+        cmake_arguments.append("-DCENTRAL=1")
+
     return cmake_arguments
 
 def _chmod(path, mode):
@@ -378,6 +387,9 @@ def setup_parser(parser):
     parser.add_argument("-c", "--changelog", dest="changelog",
                         type=str,
                         help="VCS changelog")
+    parser.add_argument("-r", "--release", dest="release_install",
+                        action="store_true", default=False,
+                        help="install packages to release directory")
     parser.add_argument("-s", "--vcs-metadata", dest="vcs_metadata",
                         type=str,
                         help="VCS metadata")
@@ -391,7 +403,7 @@ def setup_parser(parser):
                         choices=sorted(BUILD_SYSTEMS.keys()),
                         type=lambda x: BUILD_SYSTEMS[x],
                         default='eclipse')
-    parser.add_argument("-r", "--retain-cache", dest="retain_cache",
+    parser.add_argument("--retain-cache", dest="retain_cache",
                         action="store_true", default=False,
                         help="retain cmake cache")
 
@@ -409,7 +421,8 @@ def command(opts):
     from . import config as rez_cli_config
 
     now_epoch = get_epoch_time()
-    cmake_args = get_cmake_args(opts.build_system, opts.build_target)
+    cmake_args = get_cmake_args(opts.build_system, opts.build_target,
+                                opts.release_install)
 
     # separate out remaining args into cmake and make groups
     # e.g rez-build [args] -- [cmake args] -- [make args]
@@ -456,21 +469,16 @@ def command(opts):
     #-#################################################################################################
     # Iterate over variants
     #-#################################################################################################
-    
-    # FIXME: use rez.rez_release for this once rez-*-print-url and rez-*-changelog are converted to python
-    if os.path.isdir('.git'):
-        VCS='git'
-    elif os.path.isdir('.svn'):
-        VCS='svn'
-    elif os.path.isdir('.hg'):
-        VCS='hg'
-    else:
-        VCS = None
 
-    if VCS and not opts.vcs_metadata:
-        pass
-        # TODO:
-        #opts.vcs_metadata=`rez-$VCS-print-url`
+    import rez.rez_release
+    vcs = rez.rez_release.get_release_mode('.')
+    if vcs.name == 'base':
+        # we only care about version control, so ignore the base release mode
+        vcs = None
+
+    if vcs and not opts.vcs_metadata:
+        url = vcs.get_url()
+        opts.vcs_metadata = url if url else "(NONE)"
 
     if 'source_url' in metadata.metadict:
         srcdir = _get_source(metadata)
@@ -525,6 +533,7 @@ def command(opts):
         with open(build_dir_id, 'w') as f:
             f.write('')
 
+        # FIXME: use yaml for info.txt?
         meta_file = os.path.join(build_dir, 'info.txt')
         # store build metadata
         with open(meta_file, 'w') as f:
@@ -532,18 +541,19 @@ def command(opts):
             f.write("ACTUAL_BUILD_TIME: %d"  % now_epoch)
             f.write("BUILD_TIME: %d" % opts.time)
             f.write("USER: %s" % getpass.getuser())
+            # FIXME: change entry SVN to VCS
             f.write("SVN: %s" % opts.vcs_metadata)
 
         # store the changelog into a metafile (rez-release will specify one
         # via the -c flag)
         if not opts.changelog:
-            if not VCS:
-                with open(changelog_file, 'w') as f:
-                    f.write('not under version control')
+            if vcs is None:
+                log = 'not under version control'
             else:
-                pass
-                # TODO:
-                #rez-$VCS-changelog > $changelog_file
+                log = vcs.get_changelog()
+                assert log is not None, "RezReleaseMode '%s' has not properly implemented get_changelog()" % vcs.name
+            with open(changelog_file, 'w') as f:
+                f.write(log)
         else:
             shutil.copy(opts.changelog, changelog_file)
 
@@ -597,6 +607,14 @@ def command(opts):
 
         try:
             rez_cli_config.command(config_opts)
+
+            # TODO: call rez_config.Resolver directly
+#             resolver = dc.Resolver(opts.mode,
+#                                    time_epoch=opts.time,
+#                                    assume_dt=not opts.no_assume_dt,
+#                                    caching=not opts.no_cache)
+#             result = resolver.guarded_resolve((reqs + variant + ['cmake=l']),
+#                                               dot_file)
         except Exception, err:
             error("rez-build failed - an environment failed to resolve.\n" + str(err))
             if os.path.exists(dot_file):
