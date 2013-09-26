@@ -851,6 +851,7 @@ class _Configuration(object):
 		self.rctxt = rctxt
 		# packages map, for quick lookup
 		self.pkgs = {}
+		self.cond_requires = []
 		# packages list, for order retention wrt resolving
 		self.families = []
 		# connections in a dot graph
@@ -1145,6 +1146,7 @@ class _Configuration(object):
 		"""
 		confcopy = _Configuration(self.rctxt)
 		confcopy.pkgs = self.pkgs.copy()
+		confcopy.cond_requires = self.cond_requires[:]
 		confcopy.families = self.families[:]
 		confcopy.dot_graph = self.dot_graph[:]
 		return confcopy
@@ -1157,7 +1159,7 @@ class _Configuration(object):
 		confcopy.pkgs = {}
 		for k,v in self.pkgs.iteritems():
 			confcopy.pkgs[k] = v.copy()
-
+		confcopy.cond_requires = self.cond_requires[:]
 		return confcopy
 
 	def swap(self, a):
@@ -1165,6 +1167,7 @@ class _Configuration(object):
 		swap this config's contents with another
 		"""
 		self.pkgs, a.pkgs = a.pkgs, self.pkgs
+		self.cond_requires, a.cond_requires = a.cond_requires, self.cond_requires
 		self.families, a.families = a.families, self.families
 		self.dot_graph, a.dot_graph = a.dot_graph, self.dot_graph
 
@@ -1613,6 +1616,23 @@ class _Configuration(object):
 		num = 0
 		config2 = None
 
+		def add_require(pkg_str, memcache=None):
+			pkg_req = str_to_pkg_req(pkg_str, memcache)
+			if (self.rctxt.verbosity != 0):
+				print
+				print "adding " + pkg.short_name() + \
+					"'s required package " + pkg_req.short_name() + '...'
+
+			config2.add_package(pkg_req, pkg)
+
+			if (self.rctxt.verbosity != 0):
+				print "config after adding " + pkg.short_name() + \
+					"'s required package " + pkg_req.short_name() + ':'
+			if (self.rctxt.verbosity == 1):
+				print str(config2)
+			elif (self.rctxt.verbosity == 2):
+				config2.dump()
+
 		for name, pkg in self.pkgs.iteritems():
 			if (pkg.metadata == None):
 				if pkg.resolve_metafile(self.rctxt.memcache):
@@ -1630,42 +1650,22 @@ class _Configuration(object):
 
 					if requires:
 						for pkg_str in requires:
-							pkg_req = str_to_pkg_req(pkg_str, self.rctxt.memcache)
-
-							if (self.rctxt.verbosity != 0):
-								print
-								print "adding " + pkg.short_name() + \
-									"'s required package " + pkg_req.short_name() + '...'
-
 							if not config2:
 								config2 = self.copy()
-							config2.add_package(pkg_req, pkg)
+							add_require(pkg_str, self.rctxt.memcache)
 
-							if (self.rctxt.verbosity != 0):
-								print "config after adding " + pkg.short_name() + \
-									"'s required package " + pkg_req.short_name() + ':'
-							if (self.rctxt.verbosity == 1):
-								print str(config2)
-							elif (self.rctxt.verbosity == 2):
-								config2.dump()
-					
-					cond_requires = pkg.metadata.get_conditional_requires()
+					cond_requires = self.cond_requires + list(pkg.metadata.get_conditional_requires())
 					if cond_requires:
+						if not config2:
+							config2 = self.copy()
+						# reset this: it will be copied over in the loop, excluding any successes
+						config2.cond_requires = []
 						for pkg_str, conditionals in cond_requires:
 							# for now, do a simple check without verison
-							if set(conditionals).issubset(self.pkgs.keys()):
-								pkg_req = str_to_pkg_req(pkg_str)
-								if not config2:
-									config2 = self.copy()
-								config2.add_package(pkg_req, pkg)
-	
-								if (self.rctxt.verbosity != 0):
-									print "config after adding " + pkg.short_name() + \
-										"'s conditional required package " + pkg_req.short_name() + ':'
-								if (self.rctxt.verbosity == 1):
-									print str(config2)
-								elif (self.rctxt.verbosity == 2):
-									config2.dump()
+							if set(conditionals).issubset(config2.pkgs.keys()):
+								add_require(pkg_str)
+							else:
+								config2.cond_requires.append((pkg_str, conditionals))
 		if config2:
 			self.swap(config2)
 		return num

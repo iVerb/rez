@@ -59,17 +59,22 @@ Build the second variant only, and then install it, avoiding a rebuild:
 import sys
 import os
 import stat
+import inspect
+import traceback
 import os.path
 import shutil
 import subprocess
 import argparse
 import textwrap
+import abc
 from rez.cli import error, output
 
 BUILD_SYSTEMS = {'eclipse' : "Eclipse CDT4 - Unix Makefiles",
                  'codeblocks' : "CodeBlocks - Unix Makefiles",
                  'make' : "Unix Makefiles",
                  'xcode' : "Xcode"}
+
+SOURCE_ROOT = 'src'
 
 #
 #-#################################################################################################
@@ -178,69 +183,637 @@ def _get_variants(metadata, variant_nums):
     else:
         return [(-1, None)]
 
-def _download(url, file_name):
-    import urllib2
 
-    u = urllib2.urlopen(url)
-    f = open(file_name, 'wb')
-    meta = u.info()
-    file_size = int(meta.getheaders("Content-Length")[0])
-    print "Downloading: %s Bytes: %s" % (file_name, file_size)
-    
-    file_size_dl = 0
-    block_sz = 8192
-    while True:
-        buffer = u.read(block_sz)
-        if not buffer:
-            break
-    
-        file_size_dl += len(buffer)
-        f.write(buffer)
-        status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
-        status = status + chr(8)*(len(status)+1)
-        print status,
-    
-    f.close()
+class SourceRetrieverError(Exception):
+    pass
 
-def _source_archive_path(url):
-    from urlparse import urlparse
-    import posixpath
-    url_parts = urlparse(url)
-    archive = posixpath.basename(url_parts.path)
-    archive_dir = os.environ.get('REZ_BUILD_DOWNLOAD_CACHE', '.rez-downloads')
-    if not os.path.isdir(archive_dir):
-        os.makedirs(archive_dir)
-    return os.path.join(archive_dir, archive)
+class SourceRetriever(object):
+    '''Classes which are used to retrieve source necessary for building.
 
-def _extract_tar(tarpath):
+    The use of these classes is triggered by the inclusion of url entries
+    in the external_build dict of the package.yaml file
+    '''
+    __metaclass__ = abc.ABCMeta
+
+    SOURCE_DIR = 'src'
+
+    # override with a list of names that must be in the url's metadata dict
+    REQUIRED_METADATA = ['url']
+
+    # override with a name for this type of SourceRetriever, for use in
+    # package.yaml files
+    TYPE_NAME = None
+
+    def __init__(self, metadata):
+        '''Construct a SourceRetriever object from the given (raw) metadata dict
+        (ie, as parsed straight from the yaml file).  Will raise a
+        SourceRetrieverMissingMetadataError if the metadata is not compatible
+        with this SourceRetriever
+        '''
+        self.metadata = self.parse_metadata(metadata)
+
+    @property
+    def url(self):
+        return self.metadata['url']
+
+    @classmethod
+    def parse_metadata(cls, raw_metadata):
+        parsed = dict(raw_metadata)
+        for required_attr in cls.REQUIRED_METADATA:
+            if required_attr not in parsed:
+                raise SourceRetrieverError('%s classes must define %s in their'
+                                           ' metadata' % (cls.__name__,
+                                                          required_attr))
+        return parsed
+
+    @abc.abstractmethod
+    def get_source(self):
+        raise NotImplementedError
+
+    @classmethod
+    def get_source_retrievers(cls, metadata):
+        '''Given a metadata object, returns SourceRetriever objects for all the
+        url entries in the external_build section
+        '''
+        retrievers = []
+        build_data = metadata.metadict.get('external_build')
+        if build_data:
+            url = cls._get_url(build_data)
+            if url:
+                urls = [url]
+            else:
+                urls = [cls._get_url(x) for x in build_data.get('urls', [])]
+            if urls:
+                for url, retriever_class, metadata in urls:
+                    retrievers.append(retriever_class(metadata))
+        return retrievers
+
+    @classmethod
+    def _get_url(cls, metadict):
+        """
+        Return the (url, retriever_class, metadict) for the given metadict or
+        None, if no url entry is present
+        """
+        url = metadict.get('url')
+        if not url:
+            return None
+
+        # TODO: more gud smart make logic for figuring out type from url!
+        type_name = metadict.get('type')
+        if not type_name:
+            basename = url.rsplit('/', 1)[-1]
+            ext = os.path.splitext(basename)[-1]
+            ext_to_type = {
+                '.gz': 'archive',  # also covers .tar.gz
+                '.tar': 'archive',
+                # '.zip': 'archive', # haven't implemented yet
+                '.git': 'git',
+                '.hg': 'hg',
+            }
+            type_name = ext_to_type.get(ext, SourceDownloader)
+        return url, cls.type_name_to_class(type_name), metadict
+
+    TYPE_NAME_TO_CLASS = None
+
+    @classmethod
+    def type_name_to_class(cls, type_name):
+        if cls.TYPE_NAME_TO_CLASS is None:
+            # populate TYPE_NAME_TO_CLASS if we haven't yet
+            cls.TYPE_NAME_TO_CLASS = {}
+
+            def is_retriever(obj):
+                return (inspect.isclass(obj)
+                        and issubclass(obj, SourceRetriever)
+                        # used to do:
+                        #and not inspect.isabstract(obj)
+                        # ...but technically, RepoCloner isn't abstract, because
+                        # all of it's "overridden" methods are classmethods,
+                        # which as of python 2.7 can't be made abstract...
+                        and obj.TYPE_NAME is not None)
+
+            for obj in globals().itervalues():
+                if is_retriever(obj):
+                    curr_name = obj.TYPE_NAME
+                    if curr_name != curr_name.lower():
+                        raise ValueError("Invalid TYPE_NAME %r for %s - must be"
+                                         " all lower case" % (curr_name,
+                                                              obj.__name__))
+                    existing_cls = cls.TYPE_NAME_TO_CLASS.get(curr_name)
+                    if existing_cls:
+                        raise ValueError("Duplicate TYPE_NAME %r (%s and %s)"
+                                         % (curr_name, obj.__name__,
+                                            existing_cls.__name__))
+                    cls.TYPE_NAME_TO_CLASS[curr_name] = obj
+        try:
+            return cls.TYPE_NAME_TO_CLASS[type_name]
+        except KeyError:
+            raise SourceRetrieverError("unrecognized SourceRetriever type name"
+                                       " %r - valid values are %s"
+                                       % (type_name,
+                                          ', '.join(cls.TYPE_NAME_TO_CLASS.itervalues())))
+
+def _extract_tar_process(tarpath, srcdir, members):
+    """
+    used by multiprocessed tar extraction
+    """
+    # would liked to have made this a staticmethod on the class, but it would
+    # have required some heavy python magic to make it picklable.
     import tarfile
-    print "extracting %s" % tarpath
+    print "extracting %s files" % len(members)
     tar = tarfile.open(tarpath)
-    try:
-        prefix = os.path.commonprefix(tar.getnames())
-        srcdir = 'src'
-        tar.extractall(srcdir)
-        return os.path.join(srcdir, prefix)
-    finally:
-        tar.close()
-        print "done"
+    for member in members:
+        tar.extract(member, srcdir)
+    tar.close()
 
-def _get_source(metadata):
-    source_url = metadata.metadict['source_url']
-    source_path = _source_archive_path(source_url)
-    if not os.path.isfile(source_path):
-        _download(source_url, source_path)
+class SourceDownloader(SourceRetriever):
+    TYPE_NAME = 'archive'
+    # in python 2.7, this list is stored in hashlib.algorithms
+    HASH_TYPES = ('md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512')
+
+    # this may eventually be exposed as an option, or taken from -j flag somehow
+    EXTRACTION_THREADS = 8
+
+    @property
+    def hash_str(self):
+        return self.metadata['hash_str']
+
+    @property
+    def hash_type(self):
+        return self.metadata['hash_type']
+
+    @classmethod
+    def parse_metadata(cls, raw_metadata):
+        # get the hash string and hash type
+        metadata = super(SourceDownloader, cls).parse_metadata(raw_metadata)
+        url = metadata['url']
+        for hash_type in cls.HASH_TYPES:
+            hash_str = metadata.get(hash_type)
+            if hash_str:
+                metadata['hash_str'] = hash_str
+                metadata['hash_type'] = hash_type
+                return metadata
+        raise SourceRetrieverError("when providing a download url for"
+            " external build you must also provide a checksum entry (%s):"
+            " %s" % (', '.join(cls.HASH_TYPES), url))
+
+    @classmethod
+    def _download(cls, url, file_name):
+        import urllib2
+
+        u = urllib2.urlopen(url)
+
+        with open(file_name, 'wb') as f:
+            meta = u.info()
+            header = meta.getheaders("Content-Length")
+            if header:
+                file_size = int(header[0])
+                print "Downloading: %s Bytes: %s" % (file_name, file_size)
+            else:
+                file_size = None
+
+            file_size_dl = 0
+            block_sz = 8192
+            while True:
+                buffer = u.read(block_sz)
+                if not buffer:
+                    break
+
+                file_size_dl += len(buffer)
+                f.write(buffer)
+                if file_size is not None:
+                    status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
+                    status = status + chr(8)*(len(status)+1)
+                    print status,
+
+    @classmethod
+    def _source_archive_path(cls, url):
+        """
+        get the path for the local source archive
+        """
+        from urlparse import urlparse
+        import posixpath
+        url_parts = urlparse(url)
+        archive = posixpath.basename(url_parts.path)
+        archive_dir = os.environ.get('REZ_BUILD_DOWNLOAD_CACHE', '.rez-downloads')
+        if not os.path.isdir(archive_dir):
+            os.makedirs(archive_dir)
+        return os.path.join(archive_dir, archive)
+
+    @classmethod
+    def _extract_tar(cls, tarpath):
+        """
+        extract the tar file at the given path, returning the common prefix of all
+        paths in the archive
+        """
+        import tarfile
+        import time
+        from multiprocessing.pool import Pool
+
+        print "Extracting %s" % tarpath
+        s = time.time()
+        tar = tarfile.open(tarpath)
+        try:
+            directories = []
+            files = []
+            total_size = 0
+            for tarinfo in tar:
+                if tarinfo.isdir():
+                    # Extract directories with a safe mode.
+                    directories.append(tarinfo)
+                else:
+                    files.append(tarinfo)
+                    total_size += tarinfo.size
+
+            if len(files + directories) > (1000 * cls.EXTRACTION_THREADS):
+                bin_size = total_size / float(cls.EXTRACTION_THREADS)
+                jobs = [[]]
+                curr_size = 0
+                for tarinfo in files:
+                    if curr_size > bin_size:
+                        jobs.append([])
+                        curr_size = 0
+                    curr_size += tarinfo.size
+                    jobs[-1].append(tarinfo)
+                if not len(jobs[-1]):
+                    jobs.pop(-1)
+
+                print "Using %d threads" % (len(jobs))
+                # do directories first
+                tar.extractall(SOURCE_ROOT, directories)
+
+                pool = Pool(processes=cls.EXTRACTION_THREADS)
+                for job in jobs:
+                    pool.apply_async(SourceDownloader._extract_tar_process,
+                                     (tarpath, SOURCE_ROOT, job))
+                pool.close()
+                pool.join()
+            else:
+                tar.extractall(SOURCE_ROOT)
+            prefix = os.path.commonprefix([x.name for x in files])
+            print prefix
+            return os.path.join(SOURCE_ROOT, prefix)
+        finally:
+            tar.close()
+            print "done (%.02fs)" % (time.time() - s)
+
+    @classmethod
+    def _check_hash(cls, source_path, checksum, hash_type):
+        import hashlib
+        hasher = hashlib.new(hash_type)
+        with open(source_path, 'rb') as f:
+            while True:
+                # read in 16mb blocks
+                buf = f.read(16 * 1024 * 1024)
+                if not buf:
+                    break
+                hasher.update(buf)
+        real_checksum = hasher.hexdigest()
+        if checksum != real_checksum:
+            error("checksum mismatch: expected %s, got %s" % (real_checksum,
+                                                              checksum))
+            sys.exit(1)
+
+    def get_source(self):
+        """
+        Download and extract the source at the given url, caching it for reuse.
+
+        Returns the common prefix of all folders in the source archive, or None
+        if the download was unsuccessful.
+        """
+        source_path = self._source_archive_path(self.url)
+        if not os.path.isfile(source_path):
+            try:
+                self._download(self.url, source_path)
+            except Exception as e:
+                err_msg = ''.join(traceback.format_exception_only(type(e), e))
+                print "error downloading %s: %s" % (self.url, err_msg.rstrip())
+                if os.path.exists(source_path):
+                    os.remove(source_path)
+                return
+        else:
+            print "Using cached archive %s" % source_path
+        self._check_hash(source_path, self.hash_str, self.hash_type)
+        # TODO: option not to re-extract?
+        return self._extract_tar(source_path)
+
+class RepoCloner(SourceRetriever):
+    REQUIRED_METADATA = SourceRetriever.REQUIRED_METADATA + ['revision']
+
+    @classmethod
+    def _subprocess(cls, args, wait=True, check_return=True,
+                    **subprocess_kwargs):
+        '''Run a git command for the given repo_dir, with the given args
+
+        Parameters
+        ----------
+        args : strings
+            args to pass to subprocess.call (or subprocess.Popen, if wait is
+            False)
+        wait : if True, then the result of subprocess.call is returned (ie,
+            we wait for the process to finish, and return the returncode); if
+            False, then the result of subprocess.Popen is returned (ie, we do
+            not wait for the process to finish, and return the Popen object)
+        check_return:
+            if wait is True, and check_return is True, then an error will be
+            raised if the return code is non-zero
+        subprocess_kwargs : strings
+            keyword args to pass to subprocess.call (or subprocess.Popen, if
+            wait is False)
+        '''
+        if wait:
+            exitcode = subprocess.call(args, **subprocess_kwargs)
+            if check_return and exitcode:
+                raise RuntimeError("Error running %r - exitcode: %d"
+                                   % (' '.join(args), exitcode))
+            return exitcode
+        else:
+            return subprocess.Popen(args, **subprocess_kwargs)
+
+    @property
+    def revision(self):
+        return self.metadata['revision']
+
+    @classmethod
+    def repo_has_revision(cls, repo_dir, revision):
+        raise NotImplementedError
+
+    @classmethod
+    def repo_clone(cls, repo_dir, repo_url):
+        raise NotImplementedError
+
+    @classmethod
+    def repo_pull(cls, repo_dir, repo_url):
+        raise NotImplementedError
+
+    @classmethod
+    def repo_update(cls, repo_dir, revision):
+        raise NotImplementedError
+
+    def get_source(self):
+        repo_dir = self.SOURCE_DIR
+        if not os.path.isdir(repo_dir):
+            print "Cloning repo %s (to %s)" % (self.url, repo_dir)
+            self.repo_clone(repo_dir, self.url)
+        elif not self.repo_has_revision(repo_dir, self.revision):
+            print "Pulling from repo %s (to %s)" % (self.url, repo_dir)
+            self.repo_pull(repo_dir, self.url)
+
+        print "Updating repo %s to %s" % (repo_dir, self.revision)
+        self.repo_update(repo_dir, self.revision)
+        return repo_dir
+
+
+class GitCloner(RepoCloner):
+    TYPE_NAME = 'git'
+
+    @classmethod
+    def git(cls, repo_dir, git_args, wait=True, check_return=True,
+            **subprocess_kwargs):
+        '''Run a git command for the given repo_dir, with the given args
+
+        Parameters
+        ----------
+        repo_dir : basestring or None
+            if non-None, a git working dir to set as the repo to use; note that
+            since this is a required argument, if you wish to run a git command
+            that does not need a current repository (ie,
+            'git --version', 'hg clone', etc), you must explicitly pass None
+        git_args : strings
+            args to pass to git (as on the command line)
+        wait : if True, then the result of subprocess.call is returned (ie,
+            we wait for the process to finish, and return the returncode); if
+            False, then the result of subprocess.Popen is returned (ie, we do
+            not wait for the process to finish, and return the Popen object)
+        check_return:
+            if wait is True, and check_return is True, then an error will be
+            raised if the return code is non-zero
+        subprocess_kwargs : strings
+            keyword args to pass to subprocess.call (or subprocess.Popen, if
+            wait is False)
+        '''
+        args = ['git']
+        if repo_dir is not None:
+            args.extend(['--work-tree', repo_dir, '--git-dir',
+                         os.path.join(repo_dir, '.git')])
+        args.extend(git_args)
+        return cls._subprocess(args, wait=wait, check_return=check_return,
+                               **subprocess_kwargs)
+
+    @classmethod
+    def _current_branch(cls, repo_dir):
+        #proc = cls.git(repo_dir, ['branch'], wait=False, stdout=subprocess.PIPE)
+        proc = cls.git(repo_dir, ['rev-parse', '--abbrev-ref', 'HEAD'],
+                       wait=False, stdout=subprocess.PIPE)
+        stdout = proc.communicate()[0]
+        if proc.returncode:
+            raise RuntimeError("Error running git rev-parse - exitcode: %d"
+                               % proc.returncode)
+        return stdout.strip()
+
+    @classmethod
+    def _repo_remote_for_url(cls, repo_dir, repo_url):
+        '''Given a remote repo url, returns the remote name that has that url
+        as it's fetch url (creating / setting the rez_remote remote, if none
+        exists)
+        '''
+        default_remote = 'rez_remote'
+
+        proc = cls.git(repo_dir, ['remote', '-v'], wait=False,
+                       stdout=subprocess.PIPE)
+        stdout = proc.communicate()[0]
+        if proc.returncode:
+            raise RuntimeError("Error running git branch - exitcode: %d"
+                               % proc.returncode)
+
+        # for comparison, we need to "standardize" the repo url, by removing
+        # any multiple whitespace (though there probably shouldn't be
+        # whitespace)
+        repo_url = ' '.join(repo_url.strip().split())
+
+        found_default = False
+        for line in stdout.split('\n'):
+            # line we want looks like:
+            # origin  git@github.com:SomeGuy/myrepo.git (fetch)
+            fetch_str = ' (fetch)'
+            line = line.strip()
+            if not line.endswith(fetch_str):
+                continue
+            split_line = line[:-len(fetch_str)].split()
+            if len(split_line) < 2:
+                continue
+            remote_name = split_line[0]
+            if remote_name == default_remote:
+                found_default = True
+            remote_url = ' '.join(split_line[1:])
+            print "remote_url: %r" % remote_url
+            if remote_url == repo_url:
+                return remote_name
+
+        # if we've gotten here, we didn't find an existing remote that had
+        # the desired url...
+
+        if not found_default:
+            # make one...
+            cls.git(repo_dir, ['remote', 'add', default_remote, repo_url])
+        else:
+            # ...or update existing...
+            cls.git(repo_dir, ['remote', 'set-url', default_remote, repo_url])
+        return default_remote
+
+    @classmethod
+    def repo_has_revision(cls, repo_dir, revision):
+        exitcode = cls.git(repo_dir, ['cat-file', '-e', revision],
+                           check_return=False)
+        return exitcode == 0
+
+    @classmethod
+    def repo_clone(cls, repo_dir, repo_url):
+        # -n makes it not do a checkout
+        cls.git(None, ['clone', '-n', repo_url, repo_dir])
+
+    @classmethod
+    def repo_pull(cls, repo_dir, repo_url):
+        remote_name = cls._repo_remote_for_url(repo_dir, repo_url)
+        cls.git(repo_dir, ['fetch', remote_name])
+
+    @classmethod
+    def repo_update(cls, repo_dir, revision):
+        branch = cls._current_branch(repo_dir)
+        # need to use different methods to update, depending on whether or
+        # not we're switching branches...
+        if branch == 'rez':
+            # if branch is already rez, need to use "reset"
+            cls.git(repo_dir, ['reset', '--hard', revision])
+        else:
+            # create / checkout a branch called "rez"
+            cls.git(repo_dir, ['checkout', '-B', 'rez', revision])
+
+class HgCloner(RepoCloner):
+    TYPE_NAME = 'hg'
+
+    @classmethod
+    def hg(cls, repo_dir, hg_args, wait=True, check_return=True,
+           **subprocess_kwargs):
+        '''Run an hg command for the given repo_dir, with the given args
+
+        Parameters
+        ----------
+        repo_dir : basestring or None
+            if non-None, a mercurial working dir to set as the repo to use; note
+            that since this is a required argument, if you wish to run an hg
+            command that does not need a current repository (ie, 'hg --version',
+            'hg clone', etc), you must explicitly pass None
+        hg_args : strings
+            args to pass to hg (as on the command line)
+        wait : if True, then the result of subprocess.call is returned (ie,
+            we wait for the process to finish, and return the returncode); if
+            False, then the result of subprocess.Popen is returned (ie, we do
+            not wait for the process to finish, and return the Popen object)
+        check_return:
+            if wait is True, and check_return is True, then an error will be
+            raised if the return code is non-zero
+        subprocess_kwargs : strings
+            keyword args to pass to subprocess.call
+        '''
+        args = ['hg']
+        if repo_dir is not None:
+            args.extend(['-R', repo_dir])
+        args.extend(hg_args)
+        return cls._subprocess(args, wait=wait, check_return=check_return,
+                               **subprocess_kwargs)
+
+    @classmethod
+    def repo_has_revision(cls, repo_dir, revision):
+        # don't want to print error output if revision doesn't exist, so
+        # use subprocess.PIPE to swallow output
+        exitcode = cls.hg(repo_dir, ['id', '-r', revision], check_return=False,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return exitcode == 0
+
+    @classmethod
+    def repo_clone(cls, repo_dir, repo_url):
+        cls.hg(None, ['clone', '--noupdate', repo_url, repo_dir])
+
+    @classmethod
+    def repo_pull(cls, repo_dir, repo_url):
+        cls.hg(repo_dir, ['pull', repo_url])
+
+    @classmethod
+    def repo_update(cls, repo_dir, revision):
+        cls.hg(repo_dir, ['update', revision])
+
+def _patch_source(patch_info, source_path):
+    if isinstance(patch_info, list):
+        action = patch_info[0]
+        if action == 'patch':
+            patch = patch_info[1]
+            print "applying patch %s" % patch
+            patch = os.path.abspath(patch)
+            # TODO: handle urls. for now, assume relative
+            result = subprocess.call(['patch', '-p1', '-i', patch],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                cwd=source_path)
+            if result:
+                error("Failed to apply patch: %s" % patch)
+                sys.exit(1)
+        elif action == 'append':
+            path, text = patch_info[1:]
+            path = os.path.join(source_path, path)
+            print "appending %r to %s" % (text, path)
+            with open(path, 'a') as f:
+                f.write(text)
+        elif action == 'prepend':
+            path, text = patch_info[1:]
+            path = os.path.join(source_path, path)
+            print "prepending %r to %s" % (text, path)
+            with open(path, 'r') as f:
+                curr_text = f.read()
+            with open(path, 'w') as f:
+                f.write(text + curr_text)
+        elif action == 'replace':
+            path, find, replace = patch_info[1:]
+            path = os.path.join(source_path, path)
+            print "replacing %r with %r in %s" % (find, replace, path)
+            with open(path, 'r') as f:
+                curr_text = f.read()
+            curr_text = curr_text.replace(find, replace)
+            with open(path, 'w') as f:
+                f.write(curr_text)
+        else:
+            error("Unknown patch action: %s" % action)
+            sys.exit(1)
+
+def _write_cmakelist(install_commands, srcdir, working_dir_mode):
+    assert not os.path.isabs(srcdir)
+    # there are different modes available for the current working directory
+    working_dir_mode = working_dir_mode.lower()
+    if working_dir_mode == 'source':
+        working_dir = "${REZ_SOURCE_DIR}"
+    elif working_dir_mode == 'source_root':
+        working_dir = "${REZ_SOURCE_ROOT}" 
+    elif working_dir_mode == 'build':
+        working_dir = "${REZ_EXTERNAL_BUILD_DIR}"
     else:
-        print "Using cached archive %s" % source_path
-    # TODO: check sha1 of download
-    # TODO: option not to re-extract?
-    return _extract_tar(source_path)
+        error("Invalid option for 'working_dir': provide one of 'source', 'source_root', or 'build'")
+        sys.exit(1)
 
-def _write_cmakelist(install_commands, srcdir):
     lines = ['custom_build ALL ' + install_commands[0]]
     for line in install_commands[1:]:
         if line.strip():
             lines.append('  COMMAND ' + line)
+
+    import re
+
+    variables = set([])
+    for line in install_commands:
+        variables.update(re.findall('\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}', line))
+
+    if variables:
+        extra_cmake_commands = ['message("")']
+        for cmake_var in sorted(variables):
+            extra_cmake_commands.append('message("%s = ${%s}")' % (cmake_var, cmake_var))
+        extra_cmake_commands.append('message("")')
 
     text = """\
 CMAKE_MINIMUM_REQUIRED(VERSION 2.8)
@@ -250,26 +823,34 @@ include(RezBuild)
 rez_find_packages(PREFIX pkgs AUTO)
 
 # TODO: create a cmake variable for the extracted source directory and temp install directory
-  
+
+set(REZ_EXTERNAL_BUILD_DIR ${CMAKE_BINARY_DIR}/rez-external)
+
+file(MAKE_DIRECTORY ${REZ_EXTERNAL_BUILD_DIR})
+
 # trailing slash tells install to copy the directory contents
-set(REZ_INSTALL_DIR ${CMAKE_BINARY_DIR}/${REZ_BUILD_PROJECT_NAME}/)
+set(REZ_INSTALL_DIR ${REZ_EXTERNAL_BUILD_DIR}/${REZ_BUILD_PROJECT_NAME}/)
 
 install( DIRECTORY ${REZ_INSTALL_DIR}
   DESTINATION .
 )
 
 set(REZ_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/%s)
+set(REZ_SOURCE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/%s)
 
-# building in CMAKE_BINARY_DIR while providing the path to the source via REZ_SOURCE_DIR
-# allows build systems like automake / autoconf to perform out-of-source builds, e.g.
-# by calling ${REZ_SOURCE_DIR}/configure
+%s
+
 add_custom_target(
   %s
-  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  WORKING_DIRECTORY %s
 )
 
 # Create Cmake file
-rez_install_cmake(AUTO)""" % (srcdir, '\n'.join(lines))
+rez_install_cmake(AUTO)""" % (srcdir,
+                              SOURCE_ROOT,
+                              '\n'.join(extra_cmake_commands),
+                              '\n'.join(lines),
+                              working_dir)
 
     with open('CMakeLists.txt', 'w') as f:
         f.write(text)
@@ -480,12 +1061,41 @@ def command(opts):
         url = vcs.get_url()
         opts.vcs_metadata = url if url else "(NONE)"
 
-    if 'source_url' in metadata.metadict:
-        srcdir = _get_source(metadata)
-        if 'install_commands' in metadata.metadict:
-            install_commands = metadata.metadict['install_commands']
-            assert isinstance(install_commands, list)
-            _write_cmakelist(install_commands, srcdir)
+    build_data = metadata.metadict.get('external_build')
+    if build_data:
+        try:
+            retrievers = SourceRetriever.get_source_retrievers(metadata)
+            if retrievers:
+                success = False
+                for retriever in retrievers:
+                    try:
+                        srcdir = retriever.get_source()
+                        if srcdir is not None:
+                            success = True
+                            break
+                    except Exception as e:
+                        err_msg = ''.join(traceback.format_exception_only(type(e), e))
+                        error("Error retrieving source from %s: %s"
+                              % (retriever.url, err_msg.rstrip()))
+                if not success:
+                    error("All retrievers failed to retrieve source")
+                    sys.exit(1)
+
+                for patch in build_data.get('patches', []):
+                    _patch_source(patch, srcdir)
+
+                if 'commands' in build_data:
+                    # cleanup prevous runs
+                    if os.path.exists('CMakeLists.txt'):
+                        os.remove('CMakeLists.txt')
+                    install_commands = build_data['commands']
+                    assert isinstance(install_commands, list)
+                    working_dir = build_data.get('working_dir', 'source')
+                    _write_cmakelist(install_commands, srcdir, working_dir)
+
+        except SourceRetrieverError as e:
+            error(str(e))
+            sys.exit(1)
 
     build_dir_base = os.path.abspath("build")
     build_dir_id = os.path.join(build_dir_base, ".rez-build")
