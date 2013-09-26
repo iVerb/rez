@@ -74,8 +74,8 @@ BUILD_SYSTEMS = {'eclipse' : "Eclipse CDT4 - Unix Makefiles",
                  'make' : "Unix Makefiles",
                  'xcode' : "Xcode"}
 
-# in python 2.7, this list is stored in hashlib.algorithms
-HASH_TYPES = ('md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512')
+SOURCE_ROOT = 'src'
+
 #
 #-#################################################################################################
 # usage/parse args
@@ -312,9 +312,26 @@ class SourceRetriever(object):
                                        % (type_name,
                                           ', '.join(cls.TYPE_NAME_TO_CLASS.itervalues())))
 
+def _extract_tar_process(tarpath, srcdir, members):
+    """
+    used by multiprocessed tar extraction
+    """
+    # would liked to have made this a staticmethod on the class, but it would
+    # have required some heavy python magic to make it picklable.
+    import tarfile
+    print "extracting %s files" % len(members)
+    tar = tarfile.open(tarpath)
+    for member in members:
+        tar.extract(member, srcdir)
+    tar.close()
 
 class SourceDownloader(SourceRetriever):
     TYPE_NAME = 'archive'
+    # in python 2.7, this list is stored in hashlib.algorithms
+    HASH_TYPES = ('md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512')
+
+    # this may eventually be exposed as an option, or taken from -j flag somehow
+    EXTRACTION_THREADS = 8
 
     @property
     def hash_str(self):
@@ -329,7 +346,7 @@ class SourceDownloader(SourceRetriever):
         # get the hash string and hash type
         metadata = super(SourceDownloader, cls).parse_metadata(raw_metadata)
         url = metadata['url']
-        for hash_type in HASH_TYPES:
+        for hash_type in cls.HASH_TYPES:
             hash_str = metadata.get(hash_type)
             if hash_str:
                 metadata['hash_str'] = hash_str
@@ -337,7 +354,7 @@ class SourceDownloader(SourceRetriever):
                 return metadata
         raise SourceRetrieverError("when providing a download url for"
             " external build you must also provide a checksum entry (%s):"
-            " %s" % (', '.join(HASH_TYPES), url))
+            " %s" % (', '.join(cls.HASH_TYPES), url))
 
     @classmethod
     def _download(cls, url, file_name):
@@ -347,8 +364,12 @@ class SourceDownloader(SourceRetriever):
 
         with open(file_name, 'wb') as f:
             meta = u.info()
-            file_size = int(meta.getheaders("Content-Length")[0])
-            print "Downloading: %s Bytes: %s" % (file_name, file_size)
+            header = meta.getheaders("Content-Length")
+            if header:
+                file_size = int(header[0])
+                print "Downloading: %s Bytes: %s" % (file_name, file_size)
+            else:
+                file_size = None
 
             file_size_dl = 0
             block_sz = 8192
@@ -359,9 +380,10 @@ class SourceDownloader(SourceRetriever):
 
                 file_size_dl += len(buffer)
                 f.write(buffer)
-                status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
-                status = status + chr(8)*(len(status)+1)
-                print status,
+                if file_size is not None:
+                    status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
+                    status = status + chr(8)*(len(status)+1)
+                    print status,
 
     @classmethod
     def _source_archive_path(cls, url):
@@ -384,16 +406,55 @@ class SourceDownloader(SourceRetriever):
         paths in the archive
         """
         import tarfile
-        print "extracting %s" % tarpath
+        import time
+        from multiprocessing.pool import Pool
+
+        print "Extracting %s" % tarpath
+        s = time.time()
         tar = tarfile.open(tarpath)
         try:
-            prefix = os.path.commonprefix(tar.getnames())
-            srcdir = 'src'
-            tar.extractall(srcdir)
-            return os.path.join(srcdir, prefix)
+            directories = []
+            files = []
+            total_size = 0
+            for tarinfo in tar:
+                if tarinfo.isdir():
+                    # Extract directories with a safe mode.
+                    directories.append(tarinfo)
+                else:
+                    files.append(tarinfo)
+                    total_size += tarinfo.size
+
+            if len(files + directories) > (1000 * cls.EXTRACTION_THREADS):
+                bin_size = total_size / float(cls.EXTRACTION_THREADS)
+                jobs = [[]]
+                curr_size = 0
+                for tarinfo in files:
+                    if curr_size > bin_size:
+                        jobs.append([])
+                        curr_size = 0
+                    curr_size += tarinfo.size
+                    jobs[-1].append(tarinfo)
+                if not len(jobs[-1]):
+                    jobs.pop(-1)
+
+                print "Using %d threads" % (len(jobs))
+                # do directories first
+                tar.extractall(SOURCE_ROOT, directories)
+
+                pool = Pool(processes=cls.EXTRACTION_THREADS)
+                for job in jobs:
+                    pool.apply_async(SourceDownloader._extract_tar_process,
+                                     (tarpath, SOURCE_ROOT, job))
+                pool.close()
+                pool.join()
+            else:
+                tar.extractall(SOURCE_ROOT)
+            prefix = os.path.commonprefix([x.name for x in files])
+            print prefix
+            return os.path.join(SOURCE_ROOT, prefix)
         finally:
             tar.close()
-            print "done"
+            print "done (%.02fs)" % (time.time() - s)
 
     @classmethod
     def _check_hash(cls, source_path, checksum, hash_type):
@@ -408,7 +469,8 @@ class SourceDownloader(SourceRetriever):
                 hasher.update(buf)
         real_checksum = hasher.hexdigest()
         if checksum != real_checksum:
-            error("checksum mismatch: expected %s, got %s" % (real_checksum, checksum))
+            error("checksum mismatch: expected %s, got %s" % (real_checksum,
+                                                              checksum))
             sys.exit(1)
 
     def get_source(self):
@@ -425,12 +487,13 @@ class SourceDownloader(SourceRetriever):
             except Exception as e:
                 err_msg = ''.join(traceback.format_exception_only(type(e), e))
                 print "error downloading %s: %s" % (self.url, err_msg.rstrip())
+                if os.path.exists(source_path):
+                    os.remove(source_path)
                 return
         else:
             print "Using cached archive %s" % source_path
         self._check_hash(source_path, self.hash_str, self.hash_type)
         # TODO: option not to re-extract?
-        # TODO: support for other compression types
         return self._extract_tar(source_path)
 
 class RepoCloner(SourceRetriever):
@@ -679,10 +742,50 @@ class HgCloner(RepoCloner):
     def repo_update(cls, repo_dir, revision):
         cls.hg(repo_dir, ['update', revision])
 
+def _patch_source(patch_info, source_path):
+    if isinstance(patch_info, list):
+        action = patch_info[0]
+        if action == 'patch':
+            patch = patch_info[1]
+            print "applying patch %s" % patch
+            patch = os.path.abspath(patch)
+            # TODO: handle urls. for now, assume relative
+            result = subprocess.call(['patch', '-p1', '-i', patch],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                cwd=source_path)
+            if result:
+                error("Failed to apply patch: %s" % patch)
+                sys.exit(1)
+        elif action == 'append':
+            path, text = patch_info[1:]
+            path = os.path.join(source_path, path)
+            print "appending %r to %s" % (text, path)
+            with open(path, 'a') as f:
+                f.write(text)
+        elif action == 'prepend':
+            path, text = patch_info[1:]
+            path = os.path.join(source_path, path)
+            print "prepending %r to %s" % (text, path)
+            with open(path, 'r') as f:
+                curr_text = f.read()
+            with open(path, 'w') as f:
+                f.write(text + curr_text)
+        elif action == 'replace':
+            path, find, replace = patch_info[1:]
+            path = os.path.join(source_path, path)
+            print "replacing %r with %r in %s" % (find, replace, path)
+            with open(path, 'r') as f:
+                curr_text = f.read()
+            curr_text = curr_text.replace(find, replace)
+            with open(path, 'w') as f:
+                f.write(curr_text)
+        else:
+            error("Unknown patch action: %s" % action)
+            sys.exit(1)
 
 def _write_cmakelist(install_commands, srcdir, working_dir_mode):
     assert not os.path.isabs(srcdir)
-    srcroot = os.path.split(srcdir)[0]
     # there are different modes available for the current working directory
     working_dir_mode = working_dir_mode.lower()
     if working_dir_mode == 'source':
@@ -690,7 +793,7 @@ def _write_cmakelist(install_commands, srcdir, working_dir_mode):
     elif working_dir_mode == 'source_root':
         working_dir = "${REZ_SOURCE_ROOT}" 
     elif working_dir_mode == 'build':
-        working_dir = "${CMAKE_BINARY_DIR}"
+        working_dir = "${REZ_EXTERNAL_BUILD_DIR}"
     else:
         error("Invalid option for 'working_dir': provide one of 'source', 'source_root', or 'build'")
         sys.exit(1)
@@ -701,12 +804,15 @@ def _write_cmakelist(install_commands, srcdir, working_dir_mode):
             lines.append('  COMMAND ' + line)
 
     import re
-    extra_cmake_commands = []
+
+    variables = set([])
     for line in install_commands:
-        for cmake_var in re.findall('\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}', line):
+        variables.update(re.findall('\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}', line))
+
+    if variables:
+        extra_cmake_commands = ['message("")']
+        for cmake_var in sorted(variables):
             extra_cmake_commands.append('message("%s = ${%s}")' % (cmake_var, cmake_var))
-    if extra_cmake_commands:
-        extra_cmake_commands.insert(0, 'message("")')
         extra_cmake_commands.append('message("")')
 
     text = """\
@@ -717,9 +823,13 @@ include(RezBuild)
 rez_find_packages(PREFIX pkgs AUTO)
 
 # TODO: create a cmake variable for the extracted source directory and temp install directory
-  
+
+set(REZ_EXTERNAL_BUILD_DIR ${CMAKE_BINARY_DIR}/rez-external)
+
+file(MAKE_DIRECTORY ${REZ_EXTERNAL_BUILD_DIR})
+
 # trailing slash tells install to copy the directory contents
-set(REZ_INSTALL_DIR ${CMAKE_BINARY_DIR}/${REZ_BUILD_PROJECT_NAME}/)
+set(REZ_INSTALL_DIR ${REZ_EXTERNAL_BUILD_DIR}/${REZ_BUILD_PROJECT_NAME}/)
 
 install( DIRECTORY ${REZ_INSTALL_DIR}
   DESTINATION .
@@ -737,7 +847,7 @@ add_custom_target(
 
 # Create Cmake file
 rez_install_cmake(AUTO)""" % (srcdir,
-                              srcroot,
+                              SOURCE_ROOT,
                               '\n'.join(extra_cmake_commands),
                               '\n'.join(lines),
                               working_dir)
@@ -960,8 +1070,9 @@ def command(opts):
                 for retriever in retrievers:
                     try:
                         srcdir = retriever.get_source()
-                        success = True
-                        break
+                        if srcdir is not None:
+                            success = True
+                            break
                     except Exception as e:
                         err_msg = ''.join(traceback.format_exception_only(type(e), e))
                         error("Error retrieving source from %s: %s"
@@ -969,6 +1080,9 @@ def command(opts):
                 if not success:
                     error("All retrievers failed to retrieve source")
                     sys.exit(1)
+
+                for patch in build_data.get('patches', []):
+                    _patch_source(patch, srcdir)
 
                 if 'commands' in build_data:
                     # cleanup prevous runs
