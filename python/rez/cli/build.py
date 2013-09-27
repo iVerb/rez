@@ -58,6 +58,7 @@ Build the second variant only, and then install it, avoiding a rebuild:
 
 import sys
 import os
+import re
 import stat
 import inspect
 import traceback
@@ -155,7 +156,7 @@ def _get_package_metadata(filepath, quiet=False, no_catch=False):
 
     if metadata.name:
         # FIXME: this should be handled by ConfigMetadata class
-        bad_chars = [ '-', '.' ]
+        bad_chars = ['-', '.']
         for ch in bad_chars:
             if (metadata.name.find(ch) != -1):
                 error("Package name '" + metadata.name + "' contains illegal character '" + ch + "'.")
@@ -187,6 +188,9 @@ def _get_variants(metadata, variant_nums):
 class SourceRetrieverError(Exception):
     pass
 
+class InvalidSourceError(SourceRetrieverError):
+    pass
+
 class SourceRetriever(object):
     '''Classes which are used to retrieve source necessary for building.
 
@@ -195,8 +199,6 @@ class SourceRetriever(object):
     '''
     __metaclass__ = abc.ABCMeta
 
-    SOURCE_DIR = 'src'
-
     # override with a list of names that must be in the url's metadata dict
     REQUIRED_METADATA = ['url']
 
@@ -204,30 +206,110 @@ class SourceRetriever(object):
     # package.yaml files
     TYPE_NAME = None
 
-    def __init__(self, metadata):
+    def __init__(self, package, metadict):
         '''Construct a SourceRetriever object from the given (raw) metadata dict
         (ie, as parsed straight from the yaml file).  Will raise a
-        SourceRetrieverMissingMetadataError if the metadata is not compatible
+        SourceRetrieverMissingMetadataError if the metadict is not compatible
         with this SourceRetriever
         '''
-        self.metadata = self.parse_metadata(metadata)
+        self.package = package
+        self.metadict = self.parse_metadict(metadict)
 
     @property
     def url(self):
-        return self.metadata['url']
+        return self.metadict['url']
 
     @classmethod
-    def parse_metadata(cls, raw_metadata):
-        parsed = dict(raw_metadata)
+    def parse_metadict(cls, raw_metadict):
+        parsed = dict(raw_metadict)
         for required_attr in cls.REQUIRED_METADATA:
             if required_attr not in parsed:
                 raise SourceRetrieverError('%s classes must define %s in their'
-                                           ' metadata' % (cls.__name__,
+                                           ' metadict' % (cls.__name__,
                                                           required_attr))
         return parsed
 
-    @abc.abstractmethod
     def get_source(self):
+        '''Retreives/downlods the source code into the src directory
+
+        Uses a cached version of the source if possible, otherwise downloads a
+        fresh copy.
+
+        Returns the directory the source was extracted to, or None if
+        unsuccessful
+        '''
+        cache_path, shared_cache = self._source_cache_path(self.url)
+        if not self._is_invalid_cache(cache_path):
+            print "Using cached archive %s" % cache_path
+        else:
+            try:
+                cache_path = self._download(cache_path, shared_cache)
+            except Exception as e:
+                err_msg = ''.join(traceback.format_exception_only(type(e), e))
+                print "error downloading %s: %s" % (self.url, err_msg.rstrip())
+                if os.path.exists(cache_path):
+                    os.remove(cache_path)
+                return
+            else:
+                invalid_reason = self._is_invalid_cache(cache_path)
+                if invalid_reason:
+                    raise InvalidSourceError("source downloaded to %s was"
+                                                  " invalid: %s"
+                                                  % (cache_path,
+                                                     invalid_reason))
+        src_path = self._extract_from_cache(cache_path)
+        invalid_reason = self._is_invalid_source(src_path)
+        if invalid_reason:
+            raise InvalidSourceError("source extracted to %s was invalid: %s"
+                                     % (src_path, invalid_reason))
+        return src_path
+
+    def _is_invalid_source(self, source_path):
+        '''Check that the given source_path is valid; should raise a
+        SourceRetrieverError if we wish to abort the build, return False if
+        the cache was invalid, but we wish to simply delete and re-download, or
+        True if the cache is valid, and we should use it.
+        '''
+        if not os.path.exists(source_path):
+            return "%s did not exist" % source_path
+
+    def _is_invalid_cache(self, cache_path):
+        '''Make sure the cache is valid.
+
+        Default implementation runs _is_invalid_source
+        '''
+        return self._is_invalid_source(cache_path)
+
+    @abc.abstractmethod
+    def _download(self, cache_path, shared_cache):
+        '''Attempt to download the to the given cache_path.
+
+        Note that specific implementations are not guaranteed to actually
+        extract/download/etc to the given cache path - for this reason, this
+        function returns the path that the source was TRULY downloaded to.
+
+        Parameters
+        ----------
+        cache_path : str
+            path that we should attempt to download this to
+        shared_cache : bool
+            whether the given cache_path is a "shared" location, or private to
+            just this package/build
+        '''
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def _extract_from_cache(self, cache_path):
+        '''
+        extract to the final build source directory from the given cache path
+
+        Parameters
+        ----------
+        cache_path : str
+            path that we should attempt to extract the final source directory
+            for the build from
+        '''
+
         raise NotImplementedError
 
     @classmethod
@@ -236,6 +318,7 @@ class SourceRetriever(object):
         url entries in the external_build section
         '''
         retrievers = []
+        package = metadata.name
         build_data = metadata.metadict.get('external_build')
         if build_data:
             url = cls._get_url(build_data)
@@ -244,8 +327,8 @@ class SourceRetriever(object):
             else:
                 urls = [cls._get_url(x) for x in build_data.get('urls', [])]
             if urls:
-                for url, retriever_class, metadata in urls:
-                    retrievers.append(retriever_class(metadata))
+                for url, retriever_class, metadict in urls:
+                    retrievers.append(retriever_class(package, metadict))
         return retrievers
 
     @classmethod
@@ -312,6 +395,42 @@ class SourceRetriever(object):
                                        % (type_name,
                                           ', '.join(cls.TYPE_NAME_TO_CLASS.itervalues())))
 
+    def _source_cache_path(self, url):
+        """
+        get the path for the local source archive
+        """
+        archive_dir = os.environ.get('REZ_BUILD_DOWNLOAD_CACHE')
+        if archive_dir is None:
+            # if no $REZ_BUILD_DOWNLOAD_CACHE, we just put downloads in
+            # subdirectory of the CWD:
+            #   ./.rez-downloads/
+            archive_dir = '.rez-downloads'
+            shared_cache = False
+        else:
+            # ...otherwise, we organize by retriever-type and package -
+            #   $REZ_BUILD_DOWNLOAD_CACHE/<retriever_type>/<package>/
+            archive_dir = os.path.join(archive_dir, self.TYPE_NAME,
+                                       self.package)
+            shared_cache = True
+        if not os.path.isdir(archive_dir):
+            os.makedirs(archive_dir)
+
+        # first see if the metadict gives an explicit cache filename...
+        filename = self.metadict.get('external_build', {}).get('cache_filename')
+        if filename is None:
+            filename = self._source_cache_filename(url)
+        return os.path.join(archive_dir, filename), shared_cache
+
+    @abc.abstractmethod
+    def _source_cache_filename(self, url):
+        """
+        get the default filename (without directory) for the local source
+        archive of the given url (will be overridden if the url has an explicit
+        cache_filename entry in it's metadata)
+        """
+        raise NotImplementedError
+
+
 def _extract_tar_process(tarpath, srcdir, members):
     """
     used by multiprocessed tar extraction
@@ -325,6 +444,7 @@ def _extract_tar_process(tarpath, srcdir, members):
         tar.extract(member, srcdir)
     tar.close()
 
+
 class SourceDownloader(SourceRetriever):
     TYPE_NAME = 'archive'
     # in python 2.7, this list is stored in hashlib.algorithms
@@ -335,29 +455,33 @@ class SourceDownloader(SourceRetriever):
 
     @property
     def hash_str(self):
-        return self.metadata['hash_str']
+        return self.metadict['hash_str']
 
     @property
     def hash_type(self):
-        return self.metadata['hash_type']
+        return self.metadict['hash_type']
 
     @classmethod
-    def parse_metadata(cls, raw_metadata):
+    def parse_metadict(cls, raw_metadict):
         # get the hash string and hash type
-        metadata = super(SourceDownloader, cls).parse_metadata(raw_metadata)
-        url = metadata['url']
+        metadict = super(SourceDownloader, cls).parse_metadict(raw_metadict)
+        url = metadict['url']
         for hash_type in cls.HASH_TYPES:
-            hash_str = metadata.get(hash_type)
+            hash_str = metadict.get(hash_type)
             if hash_str:
-                metadata['hash_str'] = hash_str
-                metadata['hash_type'] = hash_type
-                return metadata
+                metadict['hash_str'] = hash_str
+                metadict['hash_type'] = hash_type
+                return metadict
         raise SourceRetrieverError("when providing a download url for"
             " external build you must also provide a checksum entry (%s):"
             " %s" % (', '.join(cls.HASH_TYPES), url))
 
+    def _download(self, cache_path, shared_cache):
+        self._download_file(self.url, cache_path)
+        return cache_path
+
     @classmethod
-    def _download(cls, url, file_name):
+    def _download_file(cls, url, file_name):
         import urllib2
 
         u = urllib2.urlopen(url)
@@ -382,25 +506,19 @@ class SourceDownloader(SourceRetriever):
                 f.write(buffer)
                 if file_size is not None:
                     status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
-                    status = status + chr(8)*(len(status)+1)
+                    status = status + chr(8) * (len(status) + 1)
                     print status,
 
-    @classmethod
-    def _source_archive_path(cls, url):
-        """
-        get the path for the local source archive
-        """
+    def _extract_from_cache(self, cache_path):
+        return self._extract_tar(cache_path, SOURCE_ROOT)
+
+    def _source_cache_filename(self, url):
         from urlparse import urlparse
         import posixpath
-        url_parts = urlparse(url)
-        archive = posixpath.basename(url_parts.path)
-        archive_dir = os.environ.get('REZ_BUILD_DOWNLOAD_CACHE', '.rez-downloads')
-        if not os.path.isdir(archive_dir):
-            os.makedirs(archive_dir)
-        return os.path.join(archive_dir, archive)
+        return posixpath.basename(urlparse(url).path)
 
     @classmethod
-    def _extract_tar(cls, tarpath):
+    def _extract_tar(cls, tarpath, outdir):
         """
         extract the tar file at the given path, returning the common prefix of all
         paths in the archive
@@ -439,19 +557,19 @@ class SourceDownloader(SourceRetriever):
 
                 print "Using %d threads" % (len(jobs))
                 # do directories first
-                tar.extractall(SOURCE_ROOT, directories)
+                tar.extractall(outdir, directories)
 
                 pool = Pool(processes=cls.EXTRACTION_THREADS)
                 for job in jobs:
                     pool.apply_async(SourceDownloader._extract_tar_process,
-                                     (tarpath, SOURCE_ROOT, job))
+                                     (tarpath, outdir, job))
                 pool.close()
                 pool.join()
             else:
-                tar.extractall(SOURCE_ROOT)
+                tar.extractall(outdir)
             prefix = os.path.commonprefix([x.name for x in files])
             print prefix
-            return os.path.join(SOURCE_ROOT, prefix)
+            return os.path.join(outdir, prefix)
         finally:
             tar.close()
             print "done (%.02fs)" % (time.time() - s)
@@ -469,32 +587,16 @@ class SourceDownloader(SourceRetriever):
                 hasher.update(buf)
         real_checksum = hasher.hexdigest()
         if checksum != real_checksum:
-            error("checksum mismatch: expected %s, got %s" % (real_checksum,
-                                                              checksum))
-            sys.exit(1)
+            return "checksum mismatch: expected %s, got %s" % (real_checksum,
+                                                               checksum) 
 
-    def get_source(self):
-        """
-        Download and extract the source at the given url, caching it for reuse.
+    def _is_invalid_cache(self, cache_path):
+        if not os.path.isfile(cache_path):
+            if os.path.isdir(cache_path):
+                raise InvalidSourceError("%s was a directory, not a file")
+            return "%s did not exist" % cache_path
+        return self._check_hash(cache_path, self.hash_str, self.hash_type) 
 
-        Returns the common prefix of all folders in the source archive, or None
-        if the download was unsuccessful.
-        """
-        source_path = self._source_archive_path(self.url)
-        if not os.path.isfile(source_path):
-            try:
-                self._download(self.url, source_path)
-            except Exception as e:
-                err_msg = ''.join(traceback.format_exception_only(type(e), e))
-                print "error downloading %s: %s" % (self.url, err_msg.rstrip())
-                if os.path.exists(source_path):
-                    os.remove(source_path)
-                return
-        else:
-            print "Using cached archive %s" % source_path
-        self._check_hash(source_path, self.hash_str, self.hash_type)
-        # TODO: option not to re-extract?
-        return self._extract_tar(source_path)
 
 class RepoCloner(SourceRetriever):
     REQUIRED_METADATA = SourceRetriever.REQUIRED_METADATA + ['revision']
@@ -531,14 +633,38 @@ class RepoCloner(SourceRetriever):
 
     @property
     def revision(self):
-        return self.metadata['revision']
+        return self.metadict['revision']
+
+    @classmethod
+    def repo_to_hash(cls, repo_dir, revision):
+        '''Convert a revision (which may be a symbolic name, hash, etc) to a
+        hash
+        '''
+        raise NotImplementedError
+
+    @classmethod
+    def repo_current_symbol(cls, repo_dir):
+        '''Returns the symbol that represents the "current" revision
+        '''
+        raise NotImplementedError
+
+    @classmethod
+    def repo_current_hash(cls, repo_dir):
+        return cls.repo_to_hash(repo_dir, cls.repo_current_symbol(repo_dir))
+
+    @classmethod
+    def repo_at_revision(cls, repo_dir, revision):
+        '''Whether the repo is currently at the given revision
+        '''
+        return cls.repo_current_hash(repo_dir) == cls.repo_to_hash(repo_dir,
+                                                                   revision)
 
     @classmethod
     def repo_has_revision(cls, repo_dir, revision):
         raise NotImplementedError
 
     @classmethod
-    def repo_clone(cls, repo_dir, repo_url):
+    def repo_clone(cls, repo_dir, repo_url, bare=False):
         raise NotImplementedError
 
     @classmethod
@@ -549,25 +675,218 @@ class RepoCloner(SourceRetriever):
     def repo_update(cls, repo_dir, revision):
         raise NotImplementedError
 
-    def get_source(self):
-        repo_dir = self.SOURCE_DIR
+    @classmethod
+    def repo_clone_or_pull(cls, repo_dir, other_repo, revision, bare=False):
+        '''If repo_dir does not exist, clone from other_repo to repo_dir;
+        otherwise, pull from other_repo to repo_dir if it does not have the
+        given revision
+        '''
         if not os.path.isdir(repo_dir):
-            print "Cloning repo %s (to %s)" % (self.url, repo_dir)
-            self.repo_clone(repo_dir, self.url)
-        elif not self.repo_has_revision(repo_dir, self.revision):
-            print "Pulling from repo %s (to %s)" % (self.url, repo_dir)
-            self.repo_pull(repo_dir, self.url)
+            print "Cloning repo %s (to %s)" % (other_repo, repo_dir)
+            cls.repo_clone(repo_dir, other_repo, bare=bare)
+        elif not cls.repo_has_revision(repo_dir, revision):
+            print "Pulling from repo %s (to %s)" % (other_repo, repo_dir)
+            cls.repo_pull(repo_dir, other_repo)
 
-        print "Updating repo %s to %s" % (repo_dir, self.revision)
-        self.repo_update(repo_dir, self.revision)
+    def _is_invalid_source(self, source_path):
+        if not os.path.isdir(source_path):
+            if os.path.isfile(source_path):
+                raise InvalidSourceError("%s was a file, not a directory")
+            return "%s did not exist" % source_path
+        if not self.repo_at_revision(source_path, self.revision):
+            return "%s was not at revision %s" % (source_path, self.revision)
+
+    def _is_invalid_cache(self, cache_path):
+        if not os.path.isdir(cache_path):
+            if os.path.isfile(cache_path):
+                raise InvalidSourceError("%s was a file, not a directory")
+            return "%s did not exist" % cache_path
+        if not self.repo_has_revision(cache_path, self.revision):
+            return "%s did not contain revision %s" % (cache_path, self.revision)
+
+    def _download(self, cache_path, shared_cache):
+        if shared_cache:
+            repo_dir = cache_path
+        else:
+            # if we're not using a shared cache, there's really no point in
+            # downloading to the cache location, then cloning or copying from
+            # there to the "real" location... just download straight to source
+            repo_dir = SOURCE_ROOT
+
+        self.repo_clone_or_pull(repo_dir, self.url, self.revision,
+                                bare=shared_cache)
         return repo_dir
+
+    def _extract_from_cache(self, cache_path):
+        repo_dir = SOURCE_ROOT
+
+        if cache_path != repo_dir:
+            # if the repos are not the same, clone or pull
+            self.repo_clone_or_pull(repo_dir, cache_path, self.revision,
+                                    bare=False)
+
+        # we put the update step in the "extract" step...
+        if not self.repo_at_revision(repo_dir, self.revision):
+            print "Updating repo %s to %s" % (repo_dir, self.revision)
+            self.repo_update(repo_dir, self.revision)
+        return repo_dir
+
+    def _source_cache_filename(self, url):
+        return self.encode_filesystem_name(url)
+
+    @classmethod
+    def encode_filesystem_name(cls, input_str):
+        '''Encodes an arbitrary unicode string to a generic
+        filesystem-compatible filename
+
+        The result after encoding will only contain the standard ascii lowercase
+        letters (a-z), the digits (0-9), or periods, underscores, or dashes
+        (".", "_", or "-").  No uppercase letters will be used, for
+        comaptibility with case-insensitive filesystems.
+
+        The rules for the encoding are:
+
+        1) Any lowercase letter, digit, period, or dash (a-z, 0-9, ., or -) is
+        encoded as-is.
+
+        2) Any underscore is encoded as a double-underscore ("__")
+
+        3) Any uppercase ascii letter (A-Z) is encoded as an underscore followed
+        by the corresponding lowercase letter (ie, "A" => "_a")
+
+        4) All other characters are encoded using their UTF-8 encoded unicode
+        representation, in the following format: "_NHH..., where:
+            a) N represents the number of bytes needed for the UTF-8 encoding,
+            except with N=0 for one-byte representation (the exception for N=1
+            is made both because it means that for "standard" ascii characters
+            in the range 0-127, their encoding will be _0xx, where xx is their
+            ascii hex code; and because it mirrors the ways UTF-8 encoding
+            itself works, where the number of bytes needed for the character can
+            be determined by counting the number of leading "1"s in the binary
+            representation of the character, except that if it is a 1-byte
+            sequence, there are 0 leading 1's).
+            b) HH represents the bytes of the corresponding UTF-8 encoding, in
+            hexadecimal (using lower-case letters)
+
+            As an example, the character "*", whose (hex) UTF-8 representation
+            of 2A, would be encoded as "_02a", while the "euro" symbol, which
+            has a UTF-8 representation of E2 82 AC, would be encoded as
+            "_3e282ac".  (Note that, strictly speaking, the "N" part of the
+            encoding is redundant information, since it is essentially encoded
+            in the UTF-8 representation itself, but it makes the resulting
+            string more human-readable, and easier to decode).
+
+        As an example, the string "Foo_Bar (fun).txt" would get encoded as:
+            _foo___bar_020_028fun_029.txt
+        '''
+        if isinstance(input_str, str):
+            input_str = unicode(input_str)
+        elif not isinstance(input_str, unicode):
+            raise TypeError("input_str must be a basestring")
+
+        as_is = u'abcdefghijklmnopqrstuvwxyz0123456789.-'
+        uppercase = u'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        result = []
+        for char in input_str:
+            if char in as_is:
+                result.append(char)
+            elif char == u'_':
+                result.append('__')
+            elif char in uppercase:
+                result.append('_%s' % char.lower())
+            else:
+                utf8 = char.encode('utf8')
+                N = len(utf8)
+                if N == 1:
+                    N = 0
+                HH = ''.join('%x' % ord(c) for c in utf8)
+                result.append('_%d%s' % (N, HH))
+        return ''.join(result)
+
+    FILESYSTEM_TOKEN_RE = re.compile(r'(?P<as_is>[a-z0-9.-])|(?P<underscore>__)|_(?P<uppercase>[a-z])|_(?P<N>[0-9])')
+    HEX_RE = re.compile('[0-9a-f]+$')
+
+    @classmethod
+    def decode_filesystem_name(cls, filename):
+        """Decodes a filename encoded using the rules given in
+        encode_filesystem_name to a unicode string
+        """
+        result = []
+        remain = filename
+        i = 0
+        while remain:
+            # use match, to ensure it matches from the start of the string...
+            match = cls.FILESYSTEM_TOKEN_RE.match(remain)
+            if not match:
+                raise ValueError("incorrectly encoded filesystem name %r"
+                                 " (bad index: %d - %r)" % (filename, i,
+                                                            remain[:2]))
+            match_str = match.group(0)
+            match_len = len(match_str)
+            i += match_len
+            remain = remain[match_len:]
+            match_dict = match.groupdict()
+            if match_dict['as_is']:
+                result.append(unicode(match_str))
+                #print "got as_is - %r" % result[-1]
+            elif match_dict['underscore']:
+                result.append(u'_')
+                #print "got underscore - %r" % result[-1]
+            elif match_dict['uppercase']:
+                result.append(unicode(match_dict['uppercase'].upper()))
+                #print "got uppercase - %r" % result[-1]
+            elif match_dict['N']:
+                N = int(match_dict['N'])
+                if N == 0:
+                    N = 1
+                # hex-encoded, so need to grab 2*N chars
+                bytes_len = 2 * N
+                i += bytes_len
+                bytes = remain[:bytes_len]
+                remain = remain[bytes_len:]
+
+                # need this check to ensure that we don't end up eval'ing
+                # something nasty...
+                if not cls.HEX_RE.match(bytes):
+                    raise ValueError("Bad utf8 encoding in name %r"
+                                     " (bad index: %d - %r)" % (filename, i,
+                                                                bytes))
+
+                bytes_repr = ''.join('\\x%s' % bytes[i:i + 2]
+                                     for i in xrange(0, bytes_len, 2))
+                bytes_repr = "'%s'" % bytes_repr
+                result.append(eval(bytes_repr).decode('utf8'))
+                #print "got utf8 - %r" % result[-1]
+            else:
+                raise ValueError("Unrecognized match type in filesystem name %r"
+                                 " (bad index: %d - %r)" % (filename, i,
+                                                            remain[:2]))
+            #print result
+        return u''.join(result)
+
+    @classmethod
+    def test_encode_decode(cls):
+        def do_test(orig, expected_encoded):
+            print '=' * 80
+            print orig
+            encoded = cls.encode_filesystem_name(orig)
+            print encoded
+            assert encoded == expected_encoded
+            decoded = cls.decode_filesystem_name(encoded)
+            print decoded
+            assert decoded == orig
+
+        do_test("Foo_Bar (fun).txt", '_foo___bar_020_028fun_029.txt')
+
+        # u'\u20ac' == Euro symbol
+        do_test(u"\u20ac3 ~= $4.06", '_3e282ac3_020_07e_03d_020_0244.06')
 
 
 class GitCloner(RepoCloner):
     TYPE_NAME = 'git'
 
     @classmethod
-    def git(cls, repo_dir, git_args, wait=True, check_return=True,
+    def git(cls, repo_dir, git_args, bare=None, wait=True, check_return=True,
             **subprocess_kwargs):
         '''Run a git command for the given repo_dir, with the given args
 
@@ -580,6 +899,11 @@ class GitCloner(RepoCloner):
             'git --version', 'hg clone', etc), you must explicitly pass None
         git_args : strings
             args to pass to git (as on the command line)
+        bare : bool or None
+            whether or not the repo_dir is a "bare" git repo (ie, if this is
+            false, <repo_dir>/.git should exist); if None, then will attempt
+            to auto-determine whether the repo is bare (by checking for a
+            <repo_dir>/.git dir)
         wait : if True, then the result of subprocess.call is returned (ie,
             we wait for the process to finish, and return the returncode); if
             False, then the result of subprocess.Popen is returned (ie, we do
@@ -593,8 +917,13 @@ class GitCloner(RepoCloner):
         '''
         args = ['git']
         if repo_dir is not None:
-            args.extend(['--work-tree', repo_dir, '--git-dir',
-                         os.path.join(repo_dir, '.git')])
+            if bare is None:
+                bare = not os.path.exists(os.path.join(repo_dir, '.git'))
+            if bare:
+                args.extend(['--git-dir', repo_dir])
+            else:
+                args.extend(['--work-tree', repo_dir, '--git-dir',
+                             os.path.join(repo_dir, '.git')])
         args.extend(git_args)
         return cls._subprocess(args, wait=wait, check_return=check_return,
                                **subprocess_kwargs)
@@ -661,15 +990,40 @@ class GitCloner(RepoCloner):
         return default_remote
 
     @classmethod
+    def repo_to_hash(cls, repo_dir, revision):
+        '''Convert a revision (which may be a symbolic name, hash, etc) to a
+        hash
+        '''
+        proc = cls.git(repo_dir, ['rev-parse', revision],
+                       wait=False, stdout=subprocess.PIPE)
+        stdout = proc.communicate()[0]
+        if proc.returncode:
+            raise RuntimeError("Error running git rev-parse - exitcode: %d"
+                               % proc.returncode)
+        return stdout.rstrip()
+
+    @classmethod
+    def repo_current_symbol(cls, repo_dir):
+        '''Returns the symbol that represents the "current" revision
+        '''
+        return "HEAD"
+
+    @classmethod
     def repo_has_revision(cls, repo_dir, revision):
         exitcode = cls.git(repo_dir, ['cat-file', '-e', revision],
                            check_return=False)
         return exitcode == 0
 
     @classmethod
-    def repo_clone(cls, repo_dir, repo_url):
+    def repo_clone(cls, repo_dir, repo_url, bare=False):
         # -n makes it not do a checkout
-        cls.git(None, ['clone', '-n', repo_url, repo_dir])
+        args = ['clone', '-n']
+        if bare:
+            # use mirror so we get all the branches as well, with a direct
+            # mirror default fetch for branches 
+            args.append('--mirror')
+        args.extend([repo_url, repo_dir])
+        cls.git(None, args)
 
     @classmethod
     def repo_pull(cls, repo_dir, repo_url):
@@ -723,6 +1077,25 @@ class HgCloner(RepoCloner):
                                **subprocess_kwargs)
 
     @classmethod
+    def repo_to_hash(cls, repo_dir, revision):
+        '''Convert a revision (which may be a symbolic name, hash, etc) to a
+        hash
+        '''
+        proc = cls.hg(repo_dir, ['log', '-r', revision, '--template', "{node}"],
+                       wait=False, stdout=subprocess.PIPE)
+        stdout = proc.communicate()[0]
+        if proc.returncode:
+            raise RuntimeError("Error running hg log - exitcode: %d"
+                               % proc.returncode)
+        return stdout
+
+    @classmethod
+    def repo_current_symbol(cls, repo_dir):
+        '''Returns the symbol that represents the "current" revision
+        '''
+        return "."
+
+    @classmethod
     def repo_has_revision(cls, repo_dir, revision):
         # don't want to print error output if revision doesn't exist, so
         # use subprocess.PIPE to swallow output
@@ -731,7 +1104,7 @@ class HgCloner(RepoCloner):
         return exitcode == 0
 
     @classmethod
-    def repo_clone(cls, repo_dir, repo_url):
+    def repo_clone(cls, repo_dir, repo_url, bare=False):
         cls.hg(None, ['clone', '--noupdate', repo_url, repo_dir])
 
     @classmethod
@@ -803,7 +1176,6 @@ def _write_cmakelist(install_commands, srcdir, working_dir_mode):
         if line.strip():
             lines.append('  COMMAND ' + line)
 
-    import re
 
     variables = set([])
     for line in install_commands:
@@ -1074,7 +1446,8 @@ def command(opts):
                             success = True
                             break
                     except Exception as e:
-                        err_msg = ''.join(traceback.format_exception_only(type(e), e))
+                        #err_msg = ''.join(traceback.format_exception_only(type(e), e))
+                        err_msg = traceback.format_exc()
                         error("Error retrieving source from %s: %s"
                               % (retriever.url, err_msg.rstrip()))
                 if not success:
