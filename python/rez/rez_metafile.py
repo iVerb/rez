@@ -13,63 +13,18 @@ class ConfigMetadataError(Exception):
 	def __str__(self):
 		return str(self.value)
 
-
-# TODO this class is too heavy
-class ConfigMetadata(object):
+class _BaseMetadata(object):
 	"""
 	metafile. An incorrectly-formatted file will result in either a yaml exception (if
 	the syntax is wrong) or a ConfigMetadataError (if the content is wrong). An empty
 	metafile is acceptable, and is supported for fast integration of 3rd-party packages
 	"""
 
-	# file format versioning, only update this if the package.yamls have to change
-	# format in a way that is not backwards compatible
-	METAFILE_VERSION = 0
-
 	def __init__(self, filename):
 		self.filename = filename
-		self.config_version = ConfigMetadata.METAFILE_VERSION
-		self.uuid = None
-		self.authors = None
-		self.description = None
-		self.name = None
-		self.version = None
-		self.help = None
-		self.requires = None
-		self.build_requires = None
-		self.variants = None
-		self.commands = None
 
 		with open(filename) as f:
 			self.metadict = yaml.load(f.read()) or {}
-
-		if self.metadict:
-			###############################
-			# Common content
-			###############################
-
-			if (type(self.metadict) != dict):
-				raise ConfigMetadataError("package metafile '" + self.filename + \
-					"' contains non-dictionary root node")
-
-			# config_version
-			self.config_version = self._get_int("config_version",
-													  required=True)
-
-			if (self.config_version < 0) or (self.config_version > ConfigMetadata.METAFILE_VERSION):
-				raise ConfigMetadataError("package metafile '" + self.filename + \
-					"' contains invalid config version '" + str(self.config_version) + "'")
-
-			self.uuid			= self._get_str("uuid")
-			self.description 	= self._get_str("description")
-			self.version 		= self._get_str("version")
-			self.name 			= self._get_str("name")
-			self.help 			= self._get_str("help")
-			self.authors		= self._get_list("authors", subtype=str)
-
-			# config-version-specific content
-			if (self.config_version == 0):
-				self.load_0();
 
 	def _get_list(self, label, subtype=None, required=False):
 		value = self.metadict.get(label)
@@ -118,6 +73,57 @@ class ConfigMetadata(object):
 			raise ConfigMetadataError("package metafile '%s' "
 									  "contains non-int '%s' entry" %
 									  (self.filename, label))
+
+class ConfigMetadata(_BaseMetadata):
+	# file format versioning, only update this if the package.yamls have to change
+	# format in a way that is not backwards compatible
+	METAFILE_VERSION = 0
+
+	def __init__(self, filename):
+		super(ConfigMetadata, self).__init__(filename)
+		# set defaults
+		self.uuid = None
+		self.authors = None
+		self.description = None
+		self.name = None
+		self.version = None
+		self.help = None
+		self.requires = None
+		self.build_requires = None
+		self.variants = None
+		self.commands = None
+		self.config_version = ConfigMetadata.METAFILE_VERSION
+
+		if self.metadict:
+
+			if not isinstance(self.metadict, dict):
+				raise ConfigMetadataError("package metafile '" + self.filename + \
+					"' contains non-dictionary root node")
+
+			# config_version
+			self.config_version = self._get_int("config_version",
+												required=True)
+
+			if (self.config_version < 0) or (self.config_version > ConfigMetadata.METAFILE_VERSION):
+				raise ConfigMetadataError("package metafile '" + self.filename + \
+					"' contains invalid config version '" + str(self.config_version) + "'")
+				
+
+			###############################
+			# Common content
+			###############################
+
+			self.uuid			= self._get_str("uuid")
+			self.description 	= self._get_str("description")
+			self.version 		= self._get_str("version")
+			self.name 			= self._get_str("name")
+			self.help 			= self._get_str("help")
+			self.authors		= self._get_list("authors", subtype=str)
+
+			# config-version-specific content
+			if (self.config_version == 0):
+				self.load_0()
+
 
 	def delete_nonessentials(self):
 		"""
@@ -220,6 +226,17 @@ class ConfigMetadata(object):
 			# allow use of yaml multi-line strings
 			self.commands = [x for x in self._get_str("commands").split('\n') if x]
 
+class FamilyMetadata(ConfigMetadata):
+	def __init__(self, filename):
+		super(FamilyMetadata, self).__init__(filename)
+		self.blacklist = None
+		self.archive = None
+		self.default = None
+
+		if self.metadict:
+			self.blacklist		= self._get_list("blacklist", subtype=str)
+			self.description 	= self._get_list("archive", subtype=str)
+			self.default 		= self._get_str("default")
 
 
 #    Copyright 2008-2012 Dr D Studios Pty Limited (ACN 127 184 954) (Dr. D Studios)
