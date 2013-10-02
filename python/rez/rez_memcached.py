@@ -120,6 +120,15 @@ class RezMemCache(object):
         """
         return bool(self.mc)
 
+    @cached_path("FAMPKGYAML")
+    def get_family_metafile(self, path):
+        """
+        Load the family yaml metadata in the given file.
+        """
+        d = rez_metafile.FamilyMetadata(path)
+        d.delete_nonessentials()
+        return d
+
     @cached_path("PKGYAML")
     def get_metafile(self, path):
         """
@@ -167,6 +176,16 @@ class RezMemCache(object):
 
         return None
 
+    def get_family_package(self, family_name, paths=None):
+        if paths is None:
+            paths = rez_filesys._g_syspaths
+
+        for pkg_path in paths:
+            family_path = os.path.join(pkg_path, family_name)
+            family_package = os.path.join(family_path, PKG_METADATA_FILENAME)
+            if os.path.isfile(family_package):
+                return family_package
+
     def iter_packages(self, family_name, paths=None):
         """
         Given a family name and a `VersionRange`, iterate through
@@ -203,6 +222,22 @@ class RezMemCache(object):
             results = sorted(results, key=lambda x: x[1], reverse=True)
         else:
             results = sorted(results, key=lambda x: x[1], reverse=False)
+
+        if not exact:
+            fam_pkg_path = self.get_family_package(family_name, paths)
+            if fam_pkg_path:
+                fam_metadata = self.get_family_metafile(fam_pkg_path)
+                if fam_metadata.default:
+                    default = VersionRange(fam_metadata.default)
+                    defaults = []
+                    others = []
+                    # put defaults at from of list
+                    for ver in results:
+                        if default.contains_version(ver[1]):
+                            defaults.append(ver)
+                        else:
+                            others.append(ver)
+                    results = defaults + others
 
         # find the best match
         for ver in results:

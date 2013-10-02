@@ -492,7 +492,7 @@ class RezReleaseMode(object):
 		else:
 			changelog = ''
 
-		build_cmd = "rez-build" + \
+		build_cmd = "rez-build --release" + \
 			" -t " + str(self.build_time) + \
 			" " + vararg + \
 			tag_meta_str + \
