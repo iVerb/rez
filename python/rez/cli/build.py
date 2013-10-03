@@ -433,8 +433,7 @@ class SourceRetriever(object):
         if archive_dir:
             # organize by retriever-type and package -
             #   $REZ_BUILD_DOWNLOAD_CACHE/<retriever_type>/<package>/
-            return os.path.join(archive_dir, self.TYPE_NAME,
-                                       self.package)
+            return os.path.join(archive_dir, self.TYPE_NAME, self.package)
 
     @abc.abstractmethod
     def source_cache_filename(self, url):
@@ -689,7 +688,7 @@ class RepoCloner(SourceRetriever):
         '''Whether the repo is currently at the given revision
         '''
         return cls.repo_current_hash(repo_dir) == cls.revision_to_hash(repo_dir,
-                                                                   revision)
+                                                                       revision)
 
     @classmethod
     def is_branch_name(cls, repo_dir, revision):
@@ -712,16 +711,6 @@ class RepoCloner(SourceRetriever):
         raise NotImplementedError
 
     @classmethod
-    def _get_repo_and_update(cls, dest_path, repo_url, revision):
-        # from cache to source
-        cls.repo_clone_or_pull(dest_path, repo_url, revision)
-        # we put the update step in the "extract" step...
-        if not cls.repo_at_revision(dest_path, revision):
-            print "Updating repo %s to %s" % (dest_path, revision)
-            cls.repo_update(dest_path, revision)
-        return dest_path
-
-    @classmethod
     def repo_clone_or_pull(cls, repo_dir, other_repo, revision, to_cache=False):
         '''If repo_dir does not exist, clone from other_repo to repo_dir;
         otherwise, pull from other_repo to repo_dir if it does not have the
@@ -730,9 +719,17 @@ class RepoCloner(SourceRetriever):
         if not os.path.isdir(repo_dir):
             print "Cloning repo %s (to %s)" % (other_repo, repo_dir)
             cls.repo_clone(repo_dir, other_repo, to_cache)
+            if not to_cache:
+                print "Updating repo %s to %s" % (repo_dir, revision)
+                cls.repo_update(repo_dir, revision)
+        # if the revision is a branch name, we always pull
         elif cls.is_branch_name(repo_dir, revision) or not cls.repo_has_revision(repo_dir, revision):
             print "Pulling from repo %s (to %s)" % (other_repo, repo_dir)
             cls.repo_pull(repo_dir, other_repo)
+            if not cls.repo_at_revision(repo_dir, revision):
+                print "Updating repo %s to %s" % (repo_dir, revision)
+                cls.repo_update(repo_dir, revision)
+        return repo_dir
 
     def _is_invalid_source(self, source_path):
         if not os.path.isdir(source_path):
@@ -752,16 +749,18 @@ class RepoCloner(SourceRetriever):
 
     def download_to_cache(self, dest_path):
         # from url to cache
-        self.repo_clone_or_pull(dest_path, self.url, self.revision, to_cache=True)
-        return dest_path
+        return self.repo_clone_or_pull(dest_path, self.url, self.revision,
+                                       to_cache=True)
 
     def download_to_source(self, dest_path):
         # from url to source
-        return self._get_repo_and_update(dest_path, self.url, self.revision)
+        return self.repo_clone_or_pull(dest_path, self.url, self.revision,
+                                       to_cache=False)
 
     def get_source_from_cache(self, cache_path, dest_path):
         # from cache to source
-        return self._get_repo_and_update(dest_path, cache_path, self.revision)
+        return self.repo_clone_or_pull(dest_path, cache_path, self.revision,
+                                       to_cache=False)
 
     def source_cache_filename(self, url):
         return self.encode_filesystem_name(url)
@@ -1026,6 +1025,9 @@ class GitCloner(RepoCloner):
         '''Convert a revision (which may be a symbolic name, hash, etc) to a
         hash
         '''
+        branch = cls._find_branch(repo_dir, revision)
+        if branch:
+            revision = branch
         proc = cls.git(repo_dir, ['rev-parse', revision],
                        wait=False, stdout=subprocess.PIPE)
         stdout = proc.communicate()[0]
@@ -1039,6 +1041,32 @@ class GitCloner(RepoCloner):
         '''Returns the symbol that represents the "current" revision
         '''
         return "HEAD"
+
+    @classmethod
+    def _iter_branches(cls, repo_dir, remote=True, local=True):
+        proc = cls.git(repo_dir, ['branch', '-a'],
+                       wait=False, stdout=subprocess.PIPE)
+        stdout = proc.communicate()[0]
+        if proc.returncode:
+            raise RuntimeError("Error running git branch - exitcode: %d"
+                               % proc.returncode)
+        for line in stdout.split('\n'):
+            if line and '->' not in line:
+                branch = line.strip('* ')
+                if remote and branch.startswith('remotes/'):
+                    yield branch
+                elif local and not branch.startswith('remotes/'):
+                    yield branch
+
+    @classmethod
+    def _find_branch(cls, repo_dir, name, remote=True, local=True):
+        for branch in cls._iter_branches(repo_dir, remote, local):
+            if branch.split('/')[-1] == name:
+                return branch
+
+    @classmethod
+    def is_branch_name(cls, repo_dir, revision):
+        return bool(cls._find_branch(repo_dir, revision))
 
     @classmethod
     def repo_has_revision(cls, repo_dir, revision):
@@ -1065,15 +1093,20 @@ class GitCloner(RepoCloner):
 
     @classmethod
     def repo_update(cls, repo_dir, revision):
-        branch = cls._current_branch(repo_dir)
-        # need to use different methods to update, depending on whether or
-        # not we're switching branches...
-        if branch == 'rez':
-            # if branch is already rez, need to use "reset"
-            cls.git(repo_dir, ['reset', '--hard', revision])
+        curr_branch = cls._current_branch(repo_dir)
+        branch = cls._find_branch(repo_dir, revision)
+        if branch and branch.startswith('remotes/'):
+            print "creating tracking branch for", revision
+            cls.git(repo_dir, ['checkout', '--track', 'origin/' + revision])
         else:
-            # create / checkout a branch called "rez"
-            cls.git(repo_dir, ['checkout', '-B', 'rez', revision])
+            # need to use different methods to update, depending on whether or
+            # not we're switching branches...
+            if curr_branch == 'rez':
+                # if branch is already rez, need to use "reset"
+                cls.git(repo_dir, ['reset', '--hard', revision])
+            else:
+                # create / checkout a branch called "rez"
+                cls.git(repo_dir, ['checkout', '-B', 'rez', revision])
 
 class HgCloner(RepoCloner):
     TYPE_NAME = 'hg'
@@ -1160,6 +1193,47 @@ class HgCloner(RepoCloner):
     @classmethod
     def repo_update(cls, repo_dir, revision):
         cls.hg(repo_dir, ['update', revision])
+
+def external_build(metadata):
+    build_data = metadata.metadict.get('external_build')
+    # we don't retrieve source on a release build.  this assumes that a build has
+    # been run prior to the release. eventually, rez-release will be called by
+    # rez-build, instead of the other way around, which will give us more control.
+    if build_data:
+        try:
+            retrievers = SourceRetriever.get_source_retrievers(metadata)
+            if retrievers:
+                success = False
+                for retriever in retrievers:
+                    try:
+                        srcdir = retriever.get_source()
+                        if srcdir is not None:
+                            success = True
+                            break
+                    except Exception as e:
+                        #err_msg = ''.join(traceback.format_exception_only(type(e), e))
+                        err_msg = traceback.format_exc()
+                        error("Error retrieving source from %s: %s"
+                              % (retriever.url, err_msg.rstrip()))
+                if not success:
+                    error("All retrievers failed to retrieve source")
+                    sys.exit(1)
+
+                for patch in build_data.get('patches', []):
+                    _patch_source(metadata.name, patch, srcdir)
+
+                if 'commands' in build_data:
+                    # cleanup prevous runs
+                    if os.path.exists('CMakeLists.txt'):
+                        os.remove('CMakeLists.txt')
+                    install_commands = build_data['commands']
+                    assert isinstance(install_commands, list)
+                    working_dir = build_data.get('working_dir', 'source')
+                    _write_cmakelist(install_commands, srcdir, working_dir)
+
+        except SourceRetrieverError as e:
+            error(str(e))
+            sys.exit(1)
 
 def _patch_source(package, patch_info, source_path):
     action = patch_info['type']
@@ -1515,45 +1589,8 @@ def command(opts):
         url = vcs.get_url()
         opts.vcs_metadata = url if url else "(NONE)"
 
-    build_data = metadata.metadict.get('external_build')
-    # we don't retrieve source on a release build.  this assumes that a build has
-    # been run prior to the release. eventually, rez-release will be called by
-    # rez-build, instead of the other way around, which will give us more control.
-    if build_data and not opts.release_install and not opts.print_install_path:
-        try:
-            retrievers = SourceRetriever.get_source_retrievers(metadata)
-            if retrievers:
-                success = False
-                for retriever in retrievers:
-                    try:
-                        srcdir = retriever.get_source()
-                        if srcdir is not None:
-                            success = True
-                            break
-                    except Exception as e:
-                        #err_msg = ''.join(traceback.format_exception_only(type(e), e))
-                        err_msg = traceback.format_exc()
-                        error("Error retrieving source from %s: %s"
-                              % (retriever.url, err_msg.rstrip()))
-                if not success:
-                    error("All retrievers failed to retrieve source")
-                    sys.exit(1)
-
-                for patch in build_data.get('patches', []):
-                    _patch_source(metadata.name, patch, srcdir)
-
-                if 'commands' in build_data:
-                    # cleanup prevous runs
-                    if os.path.exists('CMakeLists.txt'):
-                        os.remove('CMakeLists.txt')
-                    install_commands = build_data['commands']
-                    assert isinstance(install_commands, list)
-                    working_dir = build_data.get('working_dir', 'source')
-                    _write_cmakelist(install_commands, srcdir, working_dir)
-
-        except SourceRetrieverError as e:
-            error(str(e))
-            sys.exit(1)
+    if not opts.release_install and not opts.print_install_path:
+        external_build(metadata)
 
     build_dir_base = os.path.abspath("build")
     build_dir_id = os.path.join(build_dir_base, ".rez-build")
