@@ -1152,6 +1152,8 @@ add_custom_target(
   WORKING_DIRECTORY %s
 )
 
+# Create Cmake file
+rez_install_cmake(AUTO)
 """ % (srcdir,
                               SOURCE_ROOT,
                               '\n'.join(extra_cmake_commands),
