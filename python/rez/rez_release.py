@@ -18,6 +18,7 @@ from email.mime.text import MIMEText
 from rez.rez_util import remove_write_perms, copytree, get_epoch_time, safe_chmod
 from rez.rez_metafile import *
 import rez.public_enums as enums
+import rez.builds as builds
 import versions
 
 ##############################################################################
@@ -733,6 +734,9 @@ class RezReleaseMode(object):
 			else:
 				print "Generated %s, invoke to run cmake for this project." % src_file
 
+	def get_source(self):
+		return builds.get_patched_source(self.metadata)
+
 	# phases ---------
 	def init(self, central_release=False):
 		'''
@@ -808,6 +812,8 @@ class RezReleaseMode(object):
 		print("---------------------------------------------------------")
 		print("rez-release: building...")
 		print("---------------------------------------------------------")
+
+		self.get_source()
 
 		for varnum, variant in enumerate(self.variants):
 			self.build_variant(varnum)
