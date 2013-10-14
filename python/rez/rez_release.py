@@ -510,8 +510,8 @@ class RezReleaseMode(object):
 				return names
 			return [x for x in names if x.startswith('.')]
 
-		print "copying directory", os.getcwd()
-		copytree(os.getcwd(), build_dir, symlinks=True, hardlinks=True,
+		print "copying directory", self.root_dir
+		copytree(self.root_dir, build_dir, symlinks=True, hardlinks=True,
 				ignore=ignore)
 
 	def get_changelog(self):
@@ -529,19 +529,17 @@ class RezReleaseMode(object):
 						 'make' : "Unix Makefiles",
 						 'xcode' : "Xcode"}
 
-		cmake_arguments = ["-DCMAKE_SKIP_RPATH=1"]
-		
-		# Rez custom module location
-		cmake_arguments.append("-DCMAKE_MODULE_PATH=$CMAKE_MODULE_PATH")
-		
+		cmake_arguments = ["-DCMAKE_SKIP_RPATH=1",
+						   "-DCMAKE_MODULE_PATH=$CMAKE_MODULE_PATH"]
+
 		# Fetch the initial cache if it's defined
 		if 'CMAKE_INITIAL_CACHE' in os.environ:
 			cmake_arguments.extend(["-C", "$CMAKE_INITIAL_CACHE"])
-		
+
 		cmake_arguments.extend(["-G", BUILD_SYSTEMS[build_system]])
-		
+
 		cmake_arguments.append("-DCMAKE_BUILD_TYPE=%s" % build_target)
-		
+
 		if self.release_install:
 # 			if os.environ.get('REZ_IN_REZ_RELEASE') != "1":
 # 				result = raw_input("You are attempting to install centrally outside "
@@ -614,7 +612,7 @@ class RezReleaseMode(object):
 			f.write("USER: %s" % getpass.getuser())
 			# FIXME: change entry SVN to VCS
 			f.write("SVN: %s" % vcs_metadata)
-# 
+
 		self._write_changelog(changelog_file)
 
 		# attempt to resolve env for this variant
@@ -644,7 +642,7 @@ class RezReleaseMode(object):
 				os.remove(dot_file)
 			if os.path.exists(env_bake_file):
 				os.remove(env_bake_file)
-			sys.exit(1)
+			raise
 
 		# TODO: this shouldn't be a separate step
 		# create dot-file
@@ -696,8 +694,9 @@ class RezReleaseMode(object):
 			text += _format_bash_command(["rm", "-f", "CMakeCache.txt"])
 
 		# cmake invocation
-		cmake_dir_arg = os.path.relpath(self.root_dir, build_dir)
-		text += _format_bash_command(["cmake", "-d", cmake_dir_arg] + cmake_args)
+		#cmake_dir_arg = os.path.relpath(self.root_dir, build_dir)
+		# FIXME: the source is exported to a new location, not self.root_dir
+		text += _format_bash_command(["cmake", "-d", self.root_dir] + cmake_args)
 
 		if do_build:
 			# TODO: determine build tool from --build-system? For now just assume make
@@ -781,6 +780,7 @@ class RezReleaseMode(object):
 			if os.path.islink(self.base_build_dir):
 				os.remove(self.base_build_dir)
 			elif os.path.isdir(self.base_build_dir):
+				print "deleting pre-existing build directory: %s" % self.base_build_dir
 				shutil.rmtree(self.base_build_dir)
 			else:
 				os.remove(self.base_build_dir)
@@ -813,10 +813,18 @@ class RezReleaseMode(object):
 		print("rez-release: building...")
 		print("---------------------------------------------------------")
 
+		# TODO: merge get_source and copy_source.
+		# copy_source is meant to be "clean" (i.e. no accidental edits)
+		# and get_source should meet this requirement. It would be good to add a
+		# non-dev(e.g.release) mode to get_source which causes it to use 'hg archive',
+		# 'git archive', 'svn export' from the cached repos.
+		# lastly, it would be nice to not have to get/copy source for each variant,
+		# as this can take awhile, and the source should be guaranteed to be the
+		# same for all variants anyway.
 		self.get_source()
 
-		for varnum, variant in enumerate(self.variants):
-			self.build_variant(varnum)
+# 		for varnum, variant in enumerate(self.variants):
+# 			self.build_variant(varnum)
 
 	def build_variant(self, variant_num):
 		'''
@@ -830,11 +838,11 @@ class RezReleaseMode(object):
 			build_dir = self.base_build_dir
 			varname = "project"
 
-		print
-		print("rez-release: creating clean copy of " + varname + " to " + build_dir + "...")
-		if os.path.exists(build_dir):
-			shutil.rmtree(build_dir)
-		self.copy_source(build_dir)
+# 		print
+# 		print("rez-release: creating clean copy of " + varname + " to " + build_dir + "...")
+# 		if os.path.exists(build_dir):
+# 			shutil.rmtree(build_dir)
+# 		self.copy_source(build_dir)
 
 		self._build_variant(variant_num)
 

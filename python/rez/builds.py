@@ -1092,7 +1092,7 @@ def _write_cmakelist(install_commands, srcdir, working_dir_mode):
     elif working_dir_mode == 'source_root':
         working_dir = "${REZ_SOURCE_ROOT}" 
     elif working_dir_mode == 'build':
-        working_dir = "${REZ_EXTERNAL_BUILD_DIR}"
+        working_dir = "${REZ_BUILD_DIR}"
     else:
         error("Invalid option for 'working_dir': provide one of 'source', 'source_root', or 'build'")
         sys.exit(1)
@@ -1136,8 +1136,8 @@ include(RezBuild)
 
 rez_find_packages(PREFIX pkgs AUTO)
 
-set(REZ_EXTERNAL_BUILD_DIR ${CMAKE_BINARY_DIR}/rez-external)
-file(MAKE_DIRECTORY ${REZ_EXTERNAL_BUILD_DIR})
+set(REZ_BUILD_DIR ${CMAKE_BINARY_DIR}/rez-external)
+file(MAKE_DIRECTORY ${REZ_BUILD_DIR})
 
 # copy CMAKE_INSTALL_PREFIX to a rez variable for future proofing
 set(REZ_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX})
@@ -1210,3 +1210,4 @@ def get_patched_source(metadata):
     if srcdir:
         patch_source(metadata, srcdir)
         write_build_script(metadata, srcdir)
+        return srcdir
