@@ -248,13 +248,13 @@ class Resolver(object):
 
 			import tempfile
 			# write graphs to file
-			tmpf = tempfile.mkstemp(suffix='.dot')
+			tmpf = tempfile.mkstemp(prefix='rez-dot-cycles', suffix='.dot')
 			os.write(tmpf[0], str(e))
 			os.close(tmpf[0])
 			sys.stderr.write("\nThis graph has been written to:\n")
 			sys.stderr.write(tmpf[1] + "\n")
 
-			tmpf = tempfile.mkstemp(suffix='.dot')
+			tmpf = tempfile.mkstemp(prefix='rez-dot-cycles-all', suffix='.dot')
 			os.write(tmpf[0], e.dot_graph)
 			os.close(tmpf[0])
 			sys.stderr.write("\nThe whole graph (with cycles highlighted) has been written to:\n")
@@ -1616,8 +1616,8 @@ class _Configuration(object):
 		num = 0
 		config2 = None
 
-		def add_require(pkg_str, memcache=None):
-			pkg_req = str_to_pkg_req(pkg_str, memcache)
+		def add_require(pkg, pkg_req_str, memcache=None):
+			pkg_req = str_to_pkg_req(pkg_req_str, memcache)
 			if (self.rctxt.verbosity != 0):
 				print
 				print "adding " + pkg.short_name() + \
@@ -1652,20 +1652,24 @@ class _Configuration(object):
 						for pkg_str in requires:
 							if not config2:
 								config2 = self.copy()
-							add_require(pkg_str, self.rctxt.memcache)
+							add_require(pkg, pkg_str, self.rctxt.memcache)
 
-					cond_requires = self.cond_requires + list(pkg.metadata.get_conditional_requires())
+					# since conditional requirements might not be filled immediately,
+					# add the current pkg to the list, so we know it later:
+					cond_requires = [(pkg, pkg_str, cond) for pkg_str, cond in \
+									 pkg.metadata.get_conditional_requires()]
+					cond_requires = self.cond_requires + cond_requires
 					if cond_requires:
 						if not config2:
 							config2 = self.copy()
 						# reset this: it will be copied over in the loop, excluding any successes
 						config2.cond_requires = []
-						for pkg_str, conditionals in cond_requires:
+						for src_pkg, pkg_req_str, conditionals in cond_requires:
 							# for now, do a simple check without verison
 							if set(conditionals).issubset(config2.pkgs.keys()):
-								add_require(pkg_str)
+								add_require(src_pkg, pkg_req_str)
 							else:
-								config2.cond_requires.append((pkg_str, conditionals))
+								config2.cond_requires.append((src_pkg, pkg_req_str, conditionals))
 		if config2:
 			self.swap(config2)
 		return num
