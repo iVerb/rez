@@ -52,7 +52,7 @@ def setup_shared_parser(parser):
                         help="don't load local packages")
 
 def setup_parser(parser):
-    #usage = "usage: %prog [options] pkg1 pkg2 ... pkgN"
+    # usage = "usage: %prog [options] pkg1 pkg2 ... pkgN"
     parser.add_argument("pkg", nargs='+',
                         help='list of package names')
     parser.add_argument("-v", "--verbosity", dest="verbosity", type=int,
@@ -113,8 +113,8 @@ def command(opts):
     time_epoch = opts.time
 
     # parse out meta bake
-    meta_vars = (opts.meta_info or '').replace(',',' ').strip().split()
-    shallow_meta_vars = (opts.meta_info_shallow or '').replace(',',' ').strip().split()
+    meta_vars = (opts.meta_info or '').replace(',', ' ').strip().split()
+    shallow_meta_vars = (opts.meta_info_shallow or '').replace(',', ' ').strip().split()
 
     # hide local pkgs
     if opts.no_local:
@@ -143,7 +143,7 @@ def command(opts):
         if not result:
             sys.exit(1)
 
-    pkg_ress, env_cmds, dot_graph, num_fails = result
+    pkg_ress, commands, dot_graph, num_fails = result
 
     ##########################################################################################
     # print result
@@ -151,6 +151,12 @@ def command(opts):
 
     if not do_quiet:
         print "\nsuccessful configuration found after " + str(num_fails) + " failed attempts."
+
+    if opts.print_env or opts.env_file:
+        import rez.rex
+        # TODO: support other shells
+        script = rez.rex.interpret(commands, shell='bash')
+        env_cmds = script.split('\n')
 
     if opts.print_env:
         for env_cmd in env_cmds:
