@@ -195,7 +195,8 @@ class ConfigMetadata(_BaseMetadata):
 		Get commands with string replacement
 		"""
 		if self.commands:
-
+			if isinstance(self.commands, basestring):
+				return self.commands
 			vernums = version.split('.') + [ '', '' ]
 			major_version = vernums[0]
 			minor_version = vernums[1]
@@ -224,7 +225,7 @@ class ConfigMetadata(_BaseMetadata):
 			self.commands = self._get_list("commands", subtype=str)
 		except ConfigMetadataError:
 			# allow use of yaml multi-line strings
-			self.commands = [x for x in self._get_str("commands").split('\n') if x]
+			self.commands = self._get_str("commands")
 
 class FamilyMetadata(ConfigMetadata):
 	def __init__(self, filename):

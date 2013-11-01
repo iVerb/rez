@@ -627,18 +627,19 @@ class RezReleaseMode(object):
 
         try:
             import rez.rez_config
-            # TODO: call rez_config.Resolver directly
             resolver = rez.rez_config.Resolver(mode,
                                                time_epoch=self.build_time,
                                                assume_dt=not no_assume_dt)
             result = resolver.guarded_resolve((self.requires + variant + ['cmake=l']),
                                               dot_file)
             # FIXME: raise error here, or use unguarded resolve
-            pkg_ress, env_cmds, dot_graph, num_fails = result
+            pkg_ress, commands, dot_graph, num_fails = result
 
+            import rez.rex
+            # TODO: support other shells
+            script = rez.rex.interpret(commands, shell='bash')
             with open(env_bake_file, 'w') as f:
-                for env_cmd in env_cmds:
-                    f.write(env_cmd + '\n')
+                f.write(script)
         except Exception, err:
             # error("rez-build failed - an environment failed to resolve.\n" + str(err))
             if os.path.exists(dot_file):
@@ -651,6 +652,7 @@ class RezReleaseMode(object):
         # create dot-file
         # rez-config --print-dot --time=$opts.time $self.requires $variant > $dot_file
 
+        # TODO: convert this to a rex.Command list and generate script using a CommandInterpreter
         text = textwrap.dedent("""\
 			#!/bin/bash
 
@@ -818,7 +820,7 @@ class RezReleaseMode(object):
 
         # TODO: merge get_source and copy_source.
         # copy_source is meant to be "clean" (i.e. no accidental edits)
-        # and get_source should meet this requirement. It would be good to add a
+        # and get_source should already meet this requirement. It would be good to add a
         # non-dev(e.g.release) mode to get_source which causes it to use 'hg archive',
         # 'git archive', 'svn export' from the cached repos.
         # lastly, it would be nice to not have to get/copy source for each variant,
