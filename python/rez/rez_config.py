@@ -1740,16 +1740,24 @@ class _Configuration(object):
 					else:
 						requires = pkg.metadata.requires
 
-					if requires:
-						for pkg_str in requires:
+					if not requires:
+						continue
+
+					cond_requires = []
+					for pkg_str in requires:
+						# remove conditionals (this feature may be going away)
+						if '?' not in pkg_str:
 							if not config2:
 								config2 = self.copy()
 							add_require(pkg, pkg_str, self.rctxt.time_epoch)
+						else:
+							parts = pkg_str.split('?')
+							if len(parts) == 2:
+								conditionals = parts[1].split(',')
+								# since conditional requirements might not be filled immediately,
+								# add the current pkg to the list, so we know it later:
+								cond_requires.append((pkg, parts[0], conditionals))
 
-					# since conditional requirements might not be filled immediately,
-					# add the current pkg to the list, so we know it later:
-					cond_requires = [(pkg, pkg_str, cond) for pkg_str, cond in \
-									 pkg.metadata.get_conditional_requires()]
 					cond_requires = self.cond_requires + cond_requires
 					if cond_requires:
 						if not config2:
