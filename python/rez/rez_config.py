@@ -2050,19 +2050,19 @@ class _Configuration(object):
 
 					# check resolved path exists
 					root_path = os.path.join(pkg.base_path, *variant.metadata)
-					if not os.path.isdir(root_path):
-						pkg_req_ = pkg.as_package_request()
-
-						self.add_dot_graph_verbatim('"' + \
-							pkg_req_.short_name() + ' NOT FOUND' + \
-							'" [style=filled fillcolor="orangered"] ;')
-						self.add_dot_graph_verbatim('"' + \
-							pkg_req_.short_name() + '" -> "' + \
-							pkg_req_.short_name() + ' NOT FOUND" ;')
-						self.rctxt.last_fail_dot_graph = self.get_dot_graph_as_string()
-
-						sys.stderr.write("Warning! Package not found: " + str(pkg_req_) + "\n")
-						raise PkgNotFoundError(pkg_req_, root_path)
+# 					if not os.path.isdir(root_path):
+# 						pkg_req_ = pkg.as_package_request()
+# 
+# 						self.add_dot_graph_verbatim('"' + \
+# 							pkg_req_.short_name() + ' NOT FOUND' + \
+# 							'" [style=filled fillcolor="orangered"] ;')
+# 						self.add_dot_graph_verbatim('"' + \
+# 							pkg_req_.short_name() + '" -> "' + \
+# 							pkg_req_.short_name() + ' NOT FOUND" ;')
+# 						self.rctxt.last_fail_dot_graph = self.get_dot_graph_as_string()
+# 
+# 						sys.stderr.write("Warning! Package not found: " + str(pkg_req_) + "\n")
+# 						raise PkgNotFoundError(pkg_req_, root_path)
 
 					pkg.resolve(root_path)
 					num += 1

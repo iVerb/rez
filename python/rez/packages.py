@@ -29,7 +29,7 @@ def pkg_name(pkg_str):
 # TODO: move this to RezMemCache
 def get_family_paths(path):
     return [(x, os.path.join(path, x)) for x in os.listdir(path) \
-            if not PACKAGE_NAME_REGEX.match(x) and x not in ['rez']]
+            if not PACKAGE_NAME_REGEX.match(os.path.basename(x)) and x not in ['rez']]
 
 def iter_package_families(name=None, paths=None):
     """
@@ -45,9 +45,14 @@ def iter_package_families(name=None, paths=None):
             family_path = os.path.join(pkg_path, name)
             if os.path.isdir(family_path):
                 yield PackageFamily(name, family_path)
+            elif os.path.isfile(family_path + '.yaml'):
+                yield ExternalPackageFamily(name, family_path + '.yaml')
         else:
             for family_name, family_path in get_family_paths(pkg_path):
-                yield PackageFamily(family_name, family_path)
+                if family_path.endswith('.yaml'):
+                    yield ExternalPackageFamily(family_name, family_path)
+                else:
+                    yield PackageFamily(family_name, family_path)
 
 def iter_version_packages(name=None, paths=None):
     """
@@ -59,7 +64,7 @@ def iter_version_packages(name=None, paths=None):
 
 def package_family(name, paths=None):
     """
-    Return the first `FamilyPackage` found on the search path.
+    Return the first `FamilyPackage` found on the search path or None.
     """
     result = iter_package_families(name, paths)
     try:
@@ -116,6 +121,46 @@ class PackageFamily(object):
                 return result
 
         return None
+
+class ExternalPackageFamily(PackageFamily):
+    """
+    special case where the entire package is stored in one file
+    """
+    def __init__(self, name, path):
+        PackageFamily.__init__(self, name, path)
+        self._metadata = None
+
+    @property
+    def metadata(self):
+        # bypass the memcache so that non-essentials are not stripped
+        if self._metadata is None:
+            self._metadata = rez_metafile.load_metadata(self.path)
+            family_data = self._metadata[0]
+            for ver_data in self._metadata[1:]:
+                # only set data from family package that does not exist in version package
+                for key, value in family_data.iteritems():
+                    ver_data.setdefault(key, value)
+        return self._metadata
+
+    @property
+    def versions(self):
+        return [Version(x) for x in sorted(self.metadata[0].versions)]
+
+    def iter_version_packages(self):
+        for version in self.versions:
+            for ver_data in self.metadata[1:]:
+                if version in Version(ver_data.version):
+                    data = ver_data.copy()
+                    data['version'] = str(version)
+                    # this directory does not exist, but it's still useful in output and errors
+                    path = os.path.splitext(self.path)[0]
+                    path = os.path.join(path, data['version'])
+                    yield Package(self.name, version,
+                                  path,
+                                  0,
+                                  metadata=data,
+                                  stripped_metadata=data)
+                    break
 
 class Package(object):
     """

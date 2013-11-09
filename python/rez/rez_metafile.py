@@ -352,6 +352,35 @@ class PackageBuildConfig_0(VersionPackageConfig_0):
     """
     REQUIRED = ('config_version', 'name', 'version', 'uuid', 'description', 'authors')
 
+
+class ExternalPackageConfig_0(Metadata):
+    STRUCTURE = ('''\
+        config_version : 0
+        uuid : str
+        description : str
+        versions : [str]
+        name : str
+        help : str
+        authors : [str]
+        requires : [str]
+        build_requires : [str]
+        variants : [[str]]
+        commands : [str]
+        ---
+        version : str
+        requires : [str]
+        build_requires : [str]
+        variants : [[str]]
+        commands : [str]
+        ''',
+        '''\
+        commands: str
+        ---
+        commands: str''')
+    REQUIRED = ('[0].config_version', '[0].name', '[0].versions', '[1:].version')
+    PROTECTED = ('[:].requires', '[:].build_requires', '[:].variants', '[:].commands')
+
+
 register_config(0,
                 'version_package',
                 VersionPackageConfig_0,
@@ -370,6 +399,12 @@ register_config(0,
 register_config(0,
                 'built_package',
                 PackageBuildConfig_0)
+
+register_config(0,
+                'external_package',
+                ExternalPackageConfig_0,
+                path='{name}.yaml')
+
 
 #------------------------------------------------------------------------------
 # Main Entry Point
