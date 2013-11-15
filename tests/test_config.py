@@ -1,6 +1,6 @@
 import nose
 from nose.tools import raises
-import utils
+import utils # sets up sys.path
 
 import rez.rez_config
 from rez.rez_config import Resolver
