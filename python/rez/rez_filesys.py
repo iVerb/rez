@@ -4,7 +4,7 @@ import os
 import sys
 import os.path
 import subprocess as sp
-from versions import *
+from versions import ExactVersion
 from public_enums import *
 from rez_exceptions import *
 
@@ -19,16 +19,16 @@ _g_os_paths                 = []
 _g_os_pkg = None
 osname = os.getenv("REZ_PLATFORM")
 if osname:
-    _g_os_pkg = osname
+    _g_os_pkg = 'os-' + osname.lower()
 else:
     import platform
     osname = platform.system()
     _g_os_pkg = ""
 
     if osname == "Linux":
-        _g_os_pkg = "Linux"
-    elif osname == "Darwin":
-        _g_os_pkg = "Darwin"
+        _g_os_pkg = "os-linux"
+    elif osname == "darwin":
+        _g_os_pkg = "os-darwin"
 
 if _g_os_pkg == "":
     sys.stderr.write("Rez warning: Unknown operating system '" + _g_os_pkg + "'\n")
@@ -74,7 +74,7 @@ def get_versions_in_directory(path, warnings):
         fullpath = os.path.join(path, f)
         if os.path.isdir(fullpath):
             try:
-                ver = Version(f)
+                ver = ExactVersion(f)
             except:
                 continue
 
