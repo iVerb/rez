@@ -3,36 +3,44 @@
 import os
 import sys
 import os.path
+import platform
 import subprocess as sp
 from versions import ExactVersion
 from public_enums import *
 from rez_exceptions import *
 
+VALID_PLATFORMS = ['darwin', 'linux', 'windows']
 
 _g_rez_path                 = os.getenv("REZ_PATH")
 _g_local_pkgs_path          = os.getenv("REZ_LOCAL_PACKAGES_PATH")
 _g_new_timestamp_behaviour  = os.getenv("REZ_NEW_TIMESTAMP_BEHAVIOUR")
 _g_os_paths                 = []
 
+def get_platform():
+    osname = os.getenv("REZ_PLATFORM")
+    if osname:
+        print ("Warning: REZ_PLATFORM is no longer supported. Please modify "
+               "'%s' to require one of %s" % (osname,
+                                              ', '.join(['platform-' + plat for plat in VALID_PLATFORMS])))
+    plat = platform.system().lower()
 
-# get os
-_g_os_pkg = None
-osname = os.getenv("REZ_PLATFORM")
-if osname:
-    _g_os_pkg = 'os-' + osname.lower()
-else:
-    import platform
-    osname = platform.system()
-    _g_os_pkg = ""
+    if plat not in VALID_PLATFORMS:
+        sys.stderr.write("Rez warning: Unknown operating system '" + plat + "'\n")
+    return plat
 
-    if osname == "Linux":
-        _g_os_pkg = "os-linux"
-    elif osname == "darwin":
-        _g_os_pkg = "os-darwin"
+def get_arch():
+    # http://stackoverflow.com/questions/7164843/in-python-how-do-you-determine-whether-the-kernel-is-running-in-32-bit-or-64-bi
+    if os.name == 'nt' and sys.version_info[:2] < (2,7):
+        arch = os.environ.get("PROCESSOR_ARCHITEW6432",
+               os.environ.get('PROCESSOR_ARCHITECTURE', ''))
+        if not arch:
+            sys.stderr.write("Rez warning: Could not determine architecture\n")
+        return arch
+    else:
+        return platform.machine()
 
-if _g_os_pkg == "":
-    sys.stderr.write("Rez warning: Unknown operating system '" + _g_os_pkg + "'\n")
-
+_g_os_pkg = 'platform-' + get_platform()
+_g_arch_pkg = 'arch-' + get_arch()
 
 # get os-specific paths
 try:

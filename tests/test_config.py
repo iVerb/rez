@@ -1,12 +1,13 @@
 import nose
 from nose.tools import raises
 import utils
-
+utils.setup_pythonpath()
 import rez.rez_config
 from rez.rez_config import Resolver
 from rez.rez_exceptions import PkgsUnresolvedError, PkgConfigNotResolvedError, PkgConflictError, PkgNotFoundError
 from rez.public_enums import RESOLVE_MODE_LATEST, RESOLVE_MODE_EARLIEST
 from rez.rez_filesys import _g_os_pkg as OS_PKG
+from rez.rez_filesys import _g_arch_pkg as ARCH_PKG
 
 def check_basic_resolve(pkgs, assertions,
                         resolver_args=dict(resolve_mode=RESOLVE_MODE_LATEST),
@@ -14,7 +15,7 @@ def check_basic_resolve(pkgs, assertions,
     resolver = rez.rez_config.Resolver(**resolver_args)
     result = resolver.resolve(pkgs, **resolve_args)
     # TODO: reset cached resolves
-    assert_resolve_result(result, [OS_PKG] + assertions)
+    assert_resolve_result(result, [OS_PKG] + assertions + [ARCH_PKG])
 
 def assert_resolve_result(result, assertions):
     assert result is not None
@@ -23,36 +24,52 @@ def assert_resolve_result(result, assertions):
     res = [p.short_name() for p in pkg_ress]
     assert res == assertions, res
 
-class TestResolve(utils.RezTest):
+class ResolveBaseTest(utils.BaseTest):
     def setUp(self):
         self.cleanup()
-        # real world examples are so much easier to follow
-        self.make_local_package('python', '2.7.4',
-                                variants=[['os-linux'],
-                                          ['os-darwin']])
-        self.make_release_package('python', '2.6.4',
-                                  variants=[['os-linux'],
-                                            ['os-darwin']])
-        self.make_release_package('python', '2.6.1',
-                                  variants=[['os-linux'],
-                                            ['os-darwin']])
-        self.make_release_package('maya', '2012',
-                                  requires=['python-2.6'])
-        self.make_release_package('maya', '2013',
-                                  requires=['python-2.6'])
-        self.make_release_package('maya', '2014',
-                                  requires=['python-2.7'])
-        self.make_release_package('nuke', '7.1.2',
-                                  requires=['python-2.6'])
-        self.make_release_package('arnold', '4.0.16.0',
-                                  requires=['python'])
-        self.make_release_package('mtoa', '0.25.0',
-                                  requires=['arnold-4.0.16'],
-                                  variants=[['maya-2014'], ['maya-2013']]
-                                  )
-        self.make_release_package('os', 'linux')
-        self.make_release_package('os', 'darwin')
+        self.add_packages()
+        self.make_packages()
 
+    def add_packages(self):
+        # real world examples are so much easier to follow
+        with self.add_package('python-2.7.4', local=True) as pkg:
+            pkg.variants = [['platform-linux'],
+                            ['platform-darwin']]
+
+        with self.add_package('python-2.6.4') as pkg:
+            pkg.variants = [['platform-linux'],
+                            ['platform-darwin']]
+
+        with self.add_package('python-2.6.1') as pkg:
+            pkg.variants = [['platform-linux'],
+                            ['platform-darwin']]
+
+        with self.add_package('maya-2012') as pkg:
+            pkg.requires = ['python-2.6']
+
+        with self.add_package('maya-2013') as pkg:
+            pkg.requires = ['python-2.6']
+
+        with self.add_package('maya-2014') as pkg:
+            pkg.requires = ['python-2.7']
+
+        with self.add_package('nuke-7.1.2') as pkg:
+            pkg.requires = ['python-2.6']
+
+        with self.add_package('arnold-4.0.16.0') as pkg:
+            pkg.requires = ['python']
+
+        with self.add_package('mtoa-0.25.0') as pkg:
+            pkg.requires = ['arnold-4.0.16']
+            pkg.variants = [['maya-2014'], ['maya-2013']]
+
+        self.add_package('platform-linux')
+        self.add_package('platform-darwin')
+
+        self.add_package('arch-x86_64')
+        self.add_package('arch-i386')
+
+class TestResolve(ResolveBaseTest):
     def test_latest(self):
         for ins, outs in [
                           (['python'],
@@ -100,6 +117,55 @@ class TestResolve(utils.RezTest):
             # passes the test if the exception is raised
             yield raises(exc)(check_basic_resolve), ins, None
 
+class TestCommands(TestResolve):
+    PYTHON_COMMANDS = '''
+REZ_PYTHON_MAJOR_VERSION = '{version.part(1)}'
+REZ_PYTHON_MINOR_VERSION = '{version.part(2)}'
+
+if machine.os == 'Linux':
+    PYTHON_DIR = '/usr/local/python-{version}'
+    PATH.prepend('$PYTHON_DIR/bin')
+elif machine.os == 'Darwin':
+    PYTHON_DIR = '/usr/local/python-{version}'
+    PATH.prepend('$PYTHON_DIR/Python.framework/Versions/{version.thru(2)}/bin')
+else:
+    PYTHON_DIR = 'C:/Python{version.part(1)}{version.part(2)}'
+    PATH.prepend('$PYTHON_DIR')
+    PATH.prepend('$PYTHON_DIR/Scripts')'''
+
+    def add_packages(self):
+        super(TestCommands, self).add_packages()
+        # overrides:
+        with self.add_package('python-2.7.4', local=True) as pkg:
+            pkg.variants = [['platform-linux'],
+                            ['platform-darwin']]
+            # new style:
+            pkg.commands = self.PYTHON_COMMANDS
+
+        with self.add_package('python-2.6.4') as pkg:
+            pkg.variants = [['platform-linux'],
+                            ['platform-darwin']]
+            # new style:
+            pkg.commands = self.PYTHON_COMMANDS
+
+        with self.add_package('arnold-4.0.16.0') as pkg:
+            pkg.requires = ['python']
+            # old-style:
+            pkg.commands = ['export CMAKE_MODULE_PATH=!ROOT!/cmake:$CMAKE_MODULE_PATH'
+                            'export ARNOLD_HOME=/usr/local/solidAngle/arnold-!VERSION!'
+                            'export PATH=$ARNOLD_HOME/bin:$PATH'
+                            'export PYTHONPATH=$ARNOLD_HOME/python:$PYTHONPATH']
+
+    def test_commands(self):
+        for ins, outs in [
+                          (['python'],
+                           ['python-2.7.4']),
+                          (['python-2.6'],
+                           ['python-2.6.4']),
+                          (['mtoa'],
+                           ['python-2.7.4', 'maya-2014', 'arnold-4.0.16.0', 'mtoa-0.25.0']),
+                          ]:
+            yield check_basic_resolve, ins, outs
 
 if __name__ == '__main__':
     nose.main()

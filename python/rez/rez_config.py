@@ -340,7 +340,8 @@ class Resolver(object):
 		"""
 		if not no_os:
 			os_pkg_req = str_to_pkg_req(rez_filesys._g_os_pkg, self.rctxt.time_epoch, self.rctxt.resolve_mode)
-			pkg_reqs = [os_pkg_req] + pkg_reqs
+			arch_pkg_req = str_to_pkg_req(rez_filesys._g_arch_pkg, self.rctxt.time_epoch, self.rctxt.resolve_mode)
+			pkg_reqs = [os_pkg_req, arch_pkg_req] + pkg_reqs
 
 		if not pkg_reqs:
 			return ([], [], "digraph g{}", 0)
@@ -2099,19 +2100,7 @@ class _Configuration(object):
 # Internal Functions
 ##############################################################################
 
-def process_commands(cmds):
-	"""
-	Given a list of commands which represent a configuration context,
-
-	a) Find the first forms of X=$X:<something_else>, and drop the leading $X so
-		that values aren't inherited from the existing environment;
-	b) Find variable overwrites and raise an exception if found (ie, consecutive
-		commands of form "X=something, X=something_else".
-
-	This function returns the altered commands. Order of commands is retained.
-	"""
-	set_vars = {}
-	new_cmds = []
+def parse_export_command(cmd, env_obj):
 	"""
 	parse a bash command and convert it to a EnvironmentVariable action
 	"""
