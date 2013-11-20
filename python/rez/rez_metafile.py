@@ -379,12 +379,12 @@ class PackageBuildConfig_0(VersionPackageConfig_0):
     REQUIRED = ('config_version', 'name', 'version', 'uuid', 'description', 'authors')
 
 
-class ExternalPackageConfig_0(Metadata):
+class ExternalPackageConfigList_0(Metadata):
     STRUCTURE = ('''\
         config_version : 0
         uuid : str
         description : str
-        versions : [str]
+        versions : [!ver 1.2]
         name : str
         help : str
         authors : [str]
@@ -393,7 +393,7 @@ class ExternalPackageConfig_0(Metadata):
         variants : [[str]]
         commands : [str]
         ---
-        version : str
+        version : !ver 1.2
         requires : [str]
         build_requires : [str]
         variants : [[str]]
@@ -405,6 +405,25 @@ class ExternalPackageConfig_0(Metadata):
         commands: str''')
     REQUIRED = ('[0].config_version', '[0].name', '[0].versions', '[1:].version')
     PROTECTED = ('[:].requires', '[:].build_requires', '[:].variants', '[:].commands')
+
+class ExternalPackageConfig_0(Metadata):
+    STRUCTURE = ('''\
+        config_version : 0
+        uuid : str
+        description : str
+        versions : [!ver 1.2]
+        name : str
+        help : str
+        authors : [str]
+        requires : [str]
+        build_requires : [str]
+        variants : [[str]]
+        commands : [str]
+        ''',
+        '''\
+        commands: str''')
+    REQUIRED = ('config_version', 'name', 'versions')
+    PROTECTED = ('requires', 'build_requires', 'variants', 'commands')
 
 
 register_config(0,
@@ -429,6 +448,11 @@ register_config(0,
 register_config(0,
                 'external_package',
                 ExternalPackageConfig_0,
+                path='{name}.yaml')
+
+register_config(0,
+                'external_package',
+                ExternalPackageConfigList_0,
                 path='{name}.yaml')
 
 
@@ -476,8 +500,8 @@ def load_metadata(filename, strip=False, resource_key=None, min_config_version=0
     for config in get_configs(config_version, filename, resource_key):
         try:
             config.validate(metadata)
-        except MetadataError:
-            print "failed", config
+        except MetadataError as err:
+            print "failed", config, str(err)
             continue
         if strip:
             config.strip(metadata)

@@ -173,36 +173,54 @@ class ExternalPackageFamily(PackageFamily):
         self._metadata = None
 
     @property
-    def metadata(self):
+    def raw_metadata(self):
         # bypass the memcache so that non-essentials are not stripped
         if self._metadata is None:
             self._metadata = rez_metafile.load_metadata(self.path)
-            family_data = self._metadata[0]
-            for ver_data in self._metadata[1:]:
-                # only set data from family package that does not exist in version package
-                for key, value in family_data.iteritems():
-                    ver_data.setdefault(key, value)
+            if isinstance(self._metadata, list):
+                family_data = self._metadata[0]
+                # copy data from main metadata into sub-sections
+                for ver_data in self._metadata[1:]:
+                    # only set data from family package that does not exist in version package
+                    for key, value in family_data.iteritems():
+                        ver_data.setdefault(key, value)
         return self._metadata
 
     @property
+    def metadata(self):
+        if isinstance(self.raw_metadata, list):
+            return self.raw_metadata[0]
+        else:
+            return self.raw_metadata
+
+    @property
+    def sub_metadata(self):
+        if isinstance(self.raw_metadata, list):
+            return self.raw_metadata[1:]
+        else:
+            return []
+
+    @property
     def versions(self):
-        return [Version(x) for x in sorted(self.metadata[0].versions)]
+        print self.name, sorted(self.metadata.versions)
+        return [ExactVersion(x) for x in sorted(self.metadata.versions)]
 
     def iter_version_packages(self):
         for version in self.versions:
-            for ver_data in self.metadata[1:]:
+            data = self.metadata
+            for ver_data in self.sub_metadata:
                 if version in Version(ver_data.version):
                     data = ver_data.copy()
-                    data['version'] = str(version)
-                    # this directory does not exist, but it's still useful in output and errors
-                    path = os.path.splitext(self.path)[0]
-                    path = os.path.join(path, data['version'])
-                    yield Package(self.name, version,
-                                  path,
-                                  0,
-                                  metadata=data,
-                                  stripped_metadata=data)
                     break
+            data['version'] = version
+            # this directory does not exist, but it's still useful in output and errors
+            path = os.path.splitext(self.path)[0]
+            path = os.path.join(path, str(data['version']))
+            yield Package(self.name, version,
+                          path,
+                          0,
+                          metadata=data,
+                          stripped_metadata=data)
 
 class Package(object):
     """
