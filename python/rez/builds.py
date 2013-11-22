@@ -86,7 +86,7 @@ def get_source_retrievers(metadata):
     '''
     retrievers = []
     package = metadata.name
-    build_data = metadata.metadict.get('external_build')
+    build_data = metadata.get('external_build')
     if build_data:
         url = _get_url(build_data)
         if url:
@@ -97,7 +97,7 @@ def get_source_retrievers(metadata):
             for url, retriever_class, metadict in urls:
                 retrievers.append(retriever_class(package, metadict))
     return retrievers
-    
+
 class SourceRetriever(object):
     '''Classes which are used to retrieve source necessary for building.
 
@@ -1165,7 +1165,7 @@ rez_install_cmake(AUTO)
         f.write(text)
 
 def get_source(metadata):
-    build_data = metadata.metadict.get('external_build')
+    build_data = metadata.get('external_build')
     # we don't retrieve source on a release build.  this assumes that a build has
     # been run prior to the release. eventually, rez-release will be called by
     # rez-build, instead of the other way around, which will give us more control.
@@ -1190,12 +1190,12 @@ def get_source(metadata):
             sys.exit(1)
 
 def patch_source(metadata, srcdir):
-    build_data = metadata.metadict.get('external_build')
+    build_data = metadata.get('external_build')
     for patch in build_data.get('patches', []):
         _apply_patch(metadata.name, patch, srcdir)
 
 def write_build_script(metadata, srcdir):
-    build_data = metadata.metadict.get('external_build')
+    build_data = metadata.get('external_build')
     if 'commands' in build_data:
         # cleanup prevous runs
         if os.path.exists('CMakeLists.txt'):
