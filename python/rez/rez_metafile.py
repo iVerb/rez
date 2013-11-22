@@ -94,6 +94,12 @@ def version_constructor(loader, node):
 
 yaml.add_constructor(u'!ver', version_constructor)
 
+def version_range_constructor(loader, node):
+    value = loader.construct_scalar(node)
+    return versions.VersionRange(str(value))
+
+yaml.add_constructor(u'!verrange', version_range_constructor)
+
 def _expand_pattern(pattern):
     "expand variables in a search pattern with regular expressions"
     import versions
@@ -393,7 +399,7 @@ class ExternalPackageConfigList_0(Metadata):
         variants : [[str]]
         commands : [str]
         ---
-        version : !ver 1.2
+        version : !verrange 1.2
         requires : [str]
         build_requires : [str]
         variants : [[str]]
@@ -422,8 +428,8 @@ class ExternalPackageConfig_0(Metadata):
         ''',
         '''\
         commands: str''')
-    REQUIRED = ('config_version', 'name', 'versions')
-    PROTECTED = ('requires', 'build_requires', 'variants', 'commands')
+    REQUIRED = ('config_version', 'name')
+    PROTECTED = ('requires', 'build_requires', 'variants', 'commands', 'versions')
 
 
 register_config(0,
