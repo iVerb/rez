@@ -3,11 +3,12 @@ rez packages
 """
 import os.path
 import re
+import sys
 from public_enums import PKG_METADATA_FILENAME
-import rez_metafile
+from rez_metafile import iter_resources, load_metadata
 import rez_filesys
 from rez_exceptions import PkgSystemError
-from versions import Version, ExactVersion, VersionRange
+from versions import Version, ExactVersion, VersionRange, ExactVersionSet
 
 PACKAGE_NAME_REGSTR = '[a-zA-Z][a-zA-Z0-9_]*'
 PACKAGE_NAME_REGEX = re.compile(PACKAGE_NAME_REGSTR + '$')
@@ -26,11 +27,6 @@ def split_name(pkg_str):
 def pkg_name(pkg_str):
     return split_name(pkg_str)[0]
 
-# TODO: move this to RezMemCache
-def get_family_paths(path):
-    return [(os.path.splitext(x)[0], os.path.join(path, x)) for x in os.listdir(path) \
-            if PACKAGE_NAME_REGEX.match(os.path.splitext(x)[0]) and x not in ['rez']]
-
 def iter_package_families(name=None, paths=None):
     """
     Iterate through top-level `PackageFamily` instances.
@@ -40,19 +36,15 @@ def iter_package_families(name=None, paths=None):
     elif isinstance(paths, basestring):
         paths = [paths]
 
-    for pkg_path in paths:
-        if name is not None:
-            family_path = os.path.join(pkg_path, name)
-            if os.path.isdir(family_path):
-                yield PackageFamily(name, family_path)
-            elif os.path.isfile(family_path + '.yaml'):
-                yield ExternalPackageFamily(name, family_path + '.yaml')
+    pkg_iter = iter_resources(0,  # configuration version
+                              ['package_family.external', 'package_family.folder'],
+                              paths,
+                              name=name)
+    for path, variables, resource_info in pkg_iter:
+        if os.path.isdir(path):
+            yield PackageFamily(variables['name'], path)
         else:
-            for family_name, family_path in get_family_paths(pkg_path):
-                if family_path.endswith('.yaml'):
-                    yield ExternalPackageFamily(family_name, family_path)
-                else:
-                    yield PackageFamily(family_name, family_path)
+            yield ExternalPackageFamily(variables['name'], path)
 
 def package_family(name, paths=None):
     """
@@ -73,8 +65,8 @@ def iter_packages(name=None, paths=None, skip_dupes=True):
     for pkg_fam in iter_package_families(name, paths):
         for pkg in pkg_fam.iter_version_packages():
             if skip_dupes:
-                if pkg.version not in done:
-                    done.add(pkg.version)
+                if pkg.short_name() not in done:
+                    done.add(pkg.short_name())
                     yield pkg
             else:
                 yield pkg
@@ -154,51 +146,21 @@ def package_in_range(family_name, ver_range, latest=True, timestamp=0,
 
 class PackageFamily(object):
     """
-    A package family contains versioned packages of the same name.
-
-    A package family has a single root directory, and there may be multiple
-    package families on the rez search path with the same name.
+    A package family has a single root directory, with a sub-directory for each
+    version.
     """
     def __init__(self, name, path):
         self.name = name
         self.path = path
 
     def iter_version_packages(self):
-        from rez_memcached import get_memcache
-        metafile = os.path.join(self.path, PKG_METADATA_FILENAME)
-        if os.path.isfile(metafile):
-            # check for special case - unversioned package.
-            # only allowed when no versioned packages exist.
-            yield Package(self.name, Version(""), metafile, 0)
-        else:
-            vers = get_memcache().get_versions_in_directory(self.path)
-            if vers:
-                for ver, timestamp in vers:
-                    metafile = os.path.join(self.path, str(ver), PKG_METADATA_FILENAME)
-                    # no need to check if metafile is exists, already done in `get_versions_in_directory`
-                    yield Package(self.name, ver, metafile, timestamp)
-
-#     def version_package(self, ver_range, latest=True, exact=False, timestamp=0):
-#         """
-#         Given a a `VersionRange`, return a `Package` instance, or None if no
-#         matches are found.
-#         """
-#         # store the generator. no paths have been walked yet
-#         results = self.iter_version_packages()
-# 
-#         if timestamp:
-#             results = [x for x in results if x.timestamp <= timestamp]
-#         # sort 
-#         if latest:
-#             results = sorted(results, key=lambda x: x.version, reverse=True)
-#         else:
-#             results = sorted(results, key=lambda x: x.version, reverse=False)
-# 
-#         # find the best match
-#         for result in results:
-#             if ver_range.matches_version(result.version, allow_inexact=not exact):
-#                 return result
-#         return None
+        pkg_iter = iter_resources(0,  # configuration version
+                                  ['package.versionless', 'package.versioned'],
+                                  [os.path.dirname(self.path)],
+                                  name=self.name)
+        for metafile, variables, resource_info in pkg_iter:
+            yield Package(self.name, ExactVersion(variables.get('version', '')),
+                          metafile)
 
 class ExternalPackageFamily(PackageFamily):
     """
@@ -212,7 +174,7 @@ class ExternalPackageFamily(PackageFamily):
     def raw_metadata(self):
         # bypass the memcache so that non-essentials are not stripped
         if self._metadata is None:
-            self._metadata = rez_metafile.load_metadata(self.path)
+            self._metadata = load_metadata(self.path)
             if isinstance(self._metadata, list):
                 family_data = self._metadata[0]
                 # copy data from main metadata into sub-sections
@@ -238,25 +200,32 @@ class ExternalPackageFamily(PackageFamily):
 
     @property
     def versions(self):
-        print self.name, sorted(self.metadata.versions)
-        return [ExactVersion(x) for x in sorted(self.metadata.versions)]
+        versions = self.metadata['versions']
+        if not versions:
+            return ExactVersionSet([])
+        return ExactVersionSet(versions)
 
     def iter_version_packages(self):
-        for version in self.versions:
-            data = self.metadata
-            for ver_data in self.sub_metadata:
-                if version in Version(ver_data.version):
-                    data = ver_data.copy()
-                    break
-            data['version'] = version
-            # this directory does not exist, but it's still useful in output and errors
-            path = os.path.splitext(self.path)[0]
-            path = os.path.join(path, str(data['version']))
-            yield Package(self.name, version,
-                          path,
+        versions = self.versions
+        if versions.is_none():
+            yield Package(self.name, ExactVersion(''),
+                          self.path,
                           0,
-                          metadata=data,
-                          stripped_metadata=data)
+                          metadata=self.metadata,
+                          stripped_metadata=self.metadata)
+        else:
+            for version in self.versions:
+                data = self.metadata
+                for ver_data in self.sub_metadata:
+                    if version in VersionRange(ver_data['version']):
+                        data = ver_data.copy()
+                        break
+                data['version'] = version
+                yield Package(self.name, version,
+                              self.path,
+                              0,
+                              metadata=data,
+                              stripped_metadata=data)
 
 class Package(object):
     """
@@ -267,18 +236,14 @@ class Package(object):
     are known. When the exact list of requirements is determined, the package
     is considered resolved and the full path to the package root is known.
     """
-    def __init__(self, name, version, path, timestamp, metadata=None,
+    def __init__(self, name, version, path, timestamp=None, metadata=None,
                  stripped_metadata=None):
         self.name = name
         self.version = version
-        # for convenience, base may be a path or a metafile
-        if path.endswith('.yaml'):
-            self.base = os.path.dirname(path)
-            self.metafile = path
-        else:
-            self.base = path
-            self.metafile = os.path.join(self.base, PKG_METADATA_FILENAME)
-        self.timestamp = timestamp
+        assert os.path.splitext(path)[1], "%s: %s" % (self.name, path)
+        self.base = os.path.dirname(path)
+        self.metafile = path
+        self._timestamp = timestamp
         self._metadata = metadata
         self._stripped_metdata = stripped_metadata
 
@@ -286,7 +251,7 @@ class Package(object):
     def metadata(self):
         # bypass the memcache so that non-essentials are not stripped
         if self._metadata is None:
-            self._metadata = rez_metafile.load_metadata(self.metafile)
+            self._metadata = load_metadata(self.metafile)
         return self._metadata
 
     @property
@@ -299,11 +264,30 @@ class Package(object):
             self._stripped_metdata = get_memcache().get_metafile(self.metafile)
         return self._stripped_metdata
 
+    @property
+    def timestamp(self):
+        if self._timestamp is None:
+            self._timestamp = 0
+            if not self.is_local():
+                # TODO: replace this with package resources
+                release_time_f = os.path.join(self.base, '.metadata', 'release_time.txt')
+                if os.path.isfile(release_time_f):
+                    with open(release_time_f, 'r') as f:
+                        self._timestamp = int(f.read().strip())
+                elif rez_filesys._g_new_timestamp_behaviour:
+                    s = ("Warning: The package at %s is not timestamped and will be ignored. " +
+                         "To timestamp it manually, use the rez-timestamp utility.")
+                    print >> sys.stderr, s % self.base
+        return self._timestamp
+
     def short_name(self):
         if (len(str(self.version)) == 0):
             return self.name
         else:
             return self.name + '-' + str(self.version)
+
+    def is_local(self):
+        return self.base.startswith(rez_filesys._g_local_pkgs_path)
 
     def __str__(self):
         return str([self.name, self.version, self.base])
@@ -322,14 +306,9 @@ class ResolvedPackage(Package):
     is considered resolved and the full path to the package root is known.
     """
     def __init__(self, name, version, base, root, commands, metadata, timestamp, metafile):
-        Package.__init__(self, name, version, base, timestamp, stripped_metadata=metadata)
-        # FIXME: this is primarily here for rex. i don't like the fact that
-        # Package.version is a Version, and ResolvedPackage.version is a ExactVersion.
-        # look into moving functionality of ExactVersion onto Version
-        if version:
-            self.version = ExactVersion(version)
-        else:
-            self.version = ''
+        Package.__init__(self, name, version, metafile, timestamp, stripped_metadata=metadata)
+        self.version = ExactVersion(version)
+        self.base = base
         self.root = root
         self.raw_commands = commands
         self.commands = None
@@ -347,3 +326,9 @@ class ResolvedPackage(Package):
     def __repr__(self):
         return "%s(%r, %r, %r)" % (self.__class__.__name__, self.name,
                                    self.version, self.root)
+
+# metafile_to_package_class = {rez_metafile.BasePackageConfig_0: Package,
+#                              rez_metafile.VersionPackageConfig_0: Package,
+#                              rez_metafile.ExternalPackageConfigList_0: ExternalPackageFamily,
+#                              rez_metafile.ExternalPackageConfig_0: ExternalPackageFamily,
+#                             }

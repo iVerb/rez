@@ -19,9 +19,10 @@ import re
 
 # can't be zero padded
 VERSION_COMPONENT_REGSTR = '(?:[0-9a-z]|[1-9][0-9]+)'
-EXACT_VERSION_REGSTR = '%(comp)s(?:[.]%(comp)s)*' % dict(comp=VERSION_COMPONENT_REGSTR)
+VERSION_REGSTR = '%(comp)s(?:[.]%(comp)s)*' % dict(comp=VERSION_COMPONENT_REGSTR)
 LABEL_VERSION_REGSTR = '[a-zA-Z][a-zA-Z0-9_]+'
-EXACT_VERSION_REG = re.compile(EXACT_VERSION_REGSTR + "$")
+EXACT_VERSION_REGSTR = '(%s)|(%s)' % (VERSION_REGSTR, LABEL_VERSION_REGSTR)
+VERSION_REG = re.compile(VERSION_REGSTR + "$")
 LABEL_VERSION_REG = re.compile(LABEL_VERSION_REGSTR + "$")
 
 def is_character(tok):
@@ -482,6 +483,9 @@ class VersionRange(object):
     def __nonzero__(self):
         return not self.is_none()
 
+    def __iter__(self):
+        return self.versions.__iter__()
+
 def get_versions_union(versions):
     """Returns a sorted list of Version instances"""
     nvers = len(versions)
@@ -520,21 +524,21 @@ class ExactVersion(Version):
               'minor': 2,
               'patch': 3}
 
-# 	def __new__(self, s):
-# 		if EXACT_VERSION_REG.match(s):
-# 			self.numeric = True
-# 		elif LABEL_VERSION_REG.match(s):
-# 			self.numeric = False
-# 		else:
-# 			raise ValueError("Not a valid exact version: %r" % s)
-# 		return str.__new__(self, s)
+#     def __new__(self, s):
+#         if EXACT_VERSION_REG.match(s):
+#             self.numeric = True
+#         elif LABEL_VERSION_REG.match(s):
+#             self.numeric = False
+#         else:
+#             raise ValueError("Not a valid exact version: %r" % s)
+#         return str.__new__(self, s)
 
     def __init__(self, version):
         try:
             self.version = str(version)
         except UnicodeEncodeError:
             raise VersionError("Non-ASCII characters in version string")
-        if LABEL_VERSION_REG.match(self.version):
+        if self.version == '' or LABEL_VERSION_REG.match(self.version):
             self._ge = Version.NEG_INF
             self._lt = Version.NEG_INF
         else:
@@ -696,16 +700,16 @@ class ExactVersionSet(VersionRange):
         """
         raise NotImplementedError
 
-# 	def is_greater_no_overlap(self, ver):
-# 		"""
-# 		return True if the given version range is greater than this one,
-# 		and there is no overlap
-# 		"""
-# 		if len(self.versions) == 0 and len(ver.versions) == 0:
-# 			return False
-# 		elif len(self.versions) == 0 or len(ver.versions) == 0:
-# 			return True
-# 		return ver.versions[0].ge >= self.versions[-1].lt
+#     def is_greater_no_overlap(self, ver):
+#         """
+#         return True if the given version range is greater than this one,
+#         and there is no overlap
+#         """
+#         if len(self.versions) == 0 and len(ver.versions) == 0:
+#             return False
+#         elif len(self.versions) == 0 or len(ver.versions) == 0:
+#             return True
+#         return ver.versions[0].ge >= self.versions[-1].lt
 
 
 #    Copyright 2008-2012 Dr D Studios Pty Limited (ACN 127 184 954) (Dr. D Studios)
