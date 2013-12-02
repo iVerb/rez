@@ -497,10 +497,10 @@ class OneOf(object):
 
 # FIXME: come up with something better than this.
 # Why is the release_time in a different file than the release info?
-# Does it store something meaningfully different than ACTUAL_BUILD_TIME and BUILD_TIME? 
+# Does it store something meaningfully different than ACTUAL_BUILD_TIME and BUILD_TIME?
 # Why isn't the name of the release metadata more informative than info.txt?
 # Why does it assume SVN?
-# Why is it all caps whereas other metadata files use lowercase? 
+# Why is it all caps whereas other metadata files use lowercase?
 # Why was it using .txt with custom parsing instead of YAML?
 class ReleaseInfo(Metadata):
     REFERENCE = {
@@ -508,7 +508,7 @@ class ReleaseInfo(Metadata):
         'BUILD_TIME': 0,
         'USER': 'str',
         'SVN': 'str'
-        }
+    }
     REQUIRED = ('ACTUAL_BUILD_TIME', 'BUILD_TIME', 'USER')
 
 class BasePackageConfig_0(Metadata):
@@ -525,7 +525,7 @@ class BasePackageConfig_0(Metadata):
         'commands': OneOf('str',
                           ['str'],
                           lambda pkg, pkgs, env, recorder: None)
-        }
+    }
 
     REQUIRED = ('config_version', 'name')
     PROTECTED = ('requires', 'build_requires', 'variants', 'commands')
@@ -545,7 +545,7 @@ class VersionPackageConfig_0(BasePackageConfig_0):
         'commands': OneOf('str',
                           ['str'],
                           lambda pkg, pkgs, env, recorder: None)
-        }
+    }
     REQUIRED = ('config_version', 'name', 'version')
 
 class PackageBuildConfig_0(VersionPackageConfig_0):
@@ -570,7 +570,7 @@ class ExternalPackageConfig_0(BasePackageConfig_0):
         'commands': OneOf('str',
                           ['str'],
                           lambda pkg, pkgs, env, recorder: None)
-        }
+    }
     REQUIRED = ('config_version', 'name')
     PROTECTED = ('requires', 'build_requires', 'variants', 'commands', 'versions')
 
@@ -578,13 +578,13 @@ class ExternalPackageConfigList_0(Metadata):
     REFERENCE = [
         ExternalPackageConfig_0.REFERENCE,
         {
-        'version': VersionRange('1.2'),
-        'requires': ['name-1.2'],
-        'build_requires': ['name-1.2'],
-        'variants': [['name-1.2']],
-        'commands': OneOf('str',
-                          ['str'],
-                          lambda pkg, pkgs, env, recorder: None)
+            'version': VersionRange('1.2'),
+            'requires': ['name-1.2'],
+            'build_requires': ['name-1.2'],
+            'variants': [['name-1.2']],
+            'commands': OneOf('str',
+                ['str'],
+                lambda pkg, pkgs, env, recorder: None)
         }]
 
     REQUIRED = ('[0].config_version', '[0].name', '[0].versions', '[1:].version')

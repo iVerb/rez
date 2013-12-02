@@ -53,7 +53,7 @@ def type_name_to_class(type_name):
             return (inspect.isclass(obj)
                     and issubclass(obj, SourceRetriever)
                     # used to do:
-                    #and not inspect.isabstract(obj)
+                    # and not inspect.isabstract(obj)
                     # ...but technically, RepoCloner isn't abstract, because
                     # all of it's "overridden" methods are classmethods,
                     # which as of python 2.7 can't be made abstract...
@@ -146,7 +146,7 @@ class SourceRetriever(object):
         unsuccessful
         '''
         # need this for rez-release, but break rez-build
-        #src_path = os.path.abspath(src_path)
+        # src_path = os.path.abspath(src_path)
         cache_path = self._source_cache_path(self.url)
         if cache_path is not None:
             if not os.path.isdir(cache_path):
@@ -172,9 +172,9 @@ class SourceRetriever(object):
                     invalid_reason = self._is_invalid_cache(cache_path)
                     if invalid_reason:
                         raise InvalidSourceError("source downloaded to %s was"
-                                                      " invalid: %s"
-                                                      % (cache_path,
-                                                         invalid_reason))
+                                                 " invalid: %s"
+                                                 % (cache_path,
+                                                    invalid_reason))
             src_path = self.get_source_from_cache(cache_path, src_path)
         else:
             src_path = self.download_to_source(src_path)
@@ -310,8 +310,8 @@ class SourceDownloader(SourceRetriever):
                 metadict['hash_type'] = hash_type
                 return metadict
         raise SourceRetrieverError("when providing a download url for"
-            " external build you must also provide a checksum entry (%s):"
-            " %s" % (', '.join(cls.HASH_TYPES), url))
+                                   " external build you must also provide a checksum entry (%s):"
+                                   " %s" % (', '.join(cls.HASH_TYPES), url))
 
     def _source_cache_path(self, url):
         # Override to provide local download directory, which means that caching
@@ -449,7 +449,7 @@ class SourceDownloader(SourceRetriever):
             if os.path.isdir(cache_path):
                 raise InvalidSourceError("%s was a directory, not a file")
             return "%s did not exist" % cache_path
-        return self._check_hash(cache_path, self.hash_str, self.hash_type) 
+        return self._check_hash(cache_path, self.hash_str, self.hash_type)
 
 
 class RepoCloner(SourceRetriever):
@@ -682,13 +682,13 @@ class RepoCloner(SourceRetriever):
             match_dict = match.groupdict()
             if match_dict['as_is']:
                 result.append(unicode(match_str))
-                #print "got as_is - %r" % result[-1]
+                # print "got as_is - %r" % result[-1]
             elif match_dict['underscore']:
                 result.append(u'_')
-                #print "got underscore - %r" % result[-1]
+                # print "got underscore - %r" % result[-1]
             elif match_dict['uppercase']:
                 result.append(unicode(match_dict['uppercase'].upper()))
-                #print "got uppercase - %r" % result[-1]
+                # print "got uppercase - %r" % result[-1]
             elif match_dict['N']:
                 N = int(match_dict['N'])
                 if N == 0:
@@ -710,12 +710,12 @@ class RepoCloner(SourceRetriever):
                                      for i in xrange(0, bytes_len, 2))
                 bytes_repr = "'%s'" % bytes_repr
                 result.append(eval(bytes_repr).decode('utf8'))
-                #print "got utf8 - %r" % result[-1]
+                # print "got utf8 - %r" % result[-1]
             else:
                 raise ValueError("Unrecognized match type in filesystem name %r"
                                  " (bad index: %d - %r)" % (filename, i,
                                                             remain[:2]))
-            #print result
+            # print result
         return u''.join(result)
 
     @classmethod
@@ -784,7 +784,7 @@ class GitCloner(RepoCloner):
 
     @classmethod
     def _current_branch(cls, repo_dir):
-        #proc = cls.git(repo_dir, ['branch'], wait=False, stdout=subprocess.PIPE)
+        # proc = cls.git(repo_dir, ['branch'], wait=False, stdout=subprocess.PIPE)
         proc = cls.git(repo_dir, ['rev-parse', '--abbrev-ref', 'HEAD'],
                        wait=False, stdout=subprocess.PIPE)
         stdout = proc.communicate()[0]
@@ -1025,9 +1025,9 @@ def _apply_patch(package, patch_info, source_path):
         patch = os.path.abspath(patch)
         # TODO: handle urls. for now, assume relative
         result = subprocess.call(['patch', '-p1', '-i', patch],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            cwd=source_path)
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE,
+                                 cwd=source_path)
         if result:
             error("Failed to apply patch: %s" % patch)
             sys.exit(1)
@@ -1090,7 +1090,7 @@ def _write_cmakelist(install_commands, srcdir, working_dir_mode):
     if working_dir_mode == 'source':
         working_dir = "${REZ_SOURCE_DIR}"
     elif working_dir_mode == 'source_root':
-        working_dir = "${REZ_SOURCE_ROOT}" 
+        working_dir = "${REZ_SOURCE_ROOT}"
     elif working_dir_mode == 'build':
         working_dir = "${REZ_BUILD_DIR}"
     else:
@@ -1101,7 +1101,6 @@ def _write_cmakelist(install_commands, srcdir, working_dir_mode):
     for line in install_commands[1:]:
         if line.strip():
             lines.append('  COMMAND ' + line)
-
 
     variables = set([])
     for line in install_commands:
@@ -1155,10 +1154,10 @@ add_custom_target(
 # Create Cmake file
 rez_install_cmake(AUTO)
 """ % (srcdir,
-                              SOURCE_ROOT,
-                              '\n'.join(extra_cmake_commands),
-                              '\n'.join(lines),
-                              working_dir)
+        SOURCE_ROOT,
+        '\n'.join(extra_cmake_commands),
+        '\n'.join(lines),
+        working_dir)
 
     print "writing CMakeLists.txt"
     with open('CMakeLists.txt', 'w') as f:
@@ -1178,7 +1177,7 @@ def get_source(metadata):
                         srcdir = retriever.get_source()
                         return srcdir
                     except Exception as e:
-                        #err_msg = ''.join(traceback.format_exception_only(type(e), e))
+                        # err_msg = ''.join(traceback.format_exception_only(type(e), e))
                         err_msg = traceback.format_exc()
                         error("Error retrieving source from %s: %s"
                               % (retriever.url, err_msg.rstrip()))

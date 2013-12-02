@@ -123,7 +123,6 @@ BUILD_SYSTEMS = {'eclipse': "Eclipse CDT4 - Unix Makefiles",
 # fi
 
 
-
 def setup_parser(parser):
     import rez.public_enums as enums
     parser.add_argument("-m", "--mode", dest="mode",
