@@ -272,13 +272,13 @@ class Resolver(object):
 
             import tempfile
             # write graphs to file
-            tmpf = tempfile.mkstemp(prefix='rez-dot-cycles', suffix='.dot')
+            tmpf = tempfile.mkstemp(suffix='.dot')
             os.write(tmpf[0], str(e))
             os.close(tmpf[0])
             sys.stderr.write("\nThis graph has been written to:\n")
             sys.stderr.write(tmpf[1] + "\n")
 
-            tmpf = tempfile.mkstemp(prefix='rez-dot-cycles-all', suffix='.dot')
+            tmpf = tempfile.mkstemp(suffix='.dot')
             os.write(tmpf[0], e.dot_graph)
             os.close(tmpf[0])
             sys.stderr.write("\nThe whole graph (with cycles highlighted) has been written to:\n")
@@ -528,6 +528,10 @@ class Resolver(object):
                     import traceback
                     raise PkgCommandError("%s:\n %s" % (pkg_res.short_name(),
                                                         traceback.format_exc(err)))
+            elif inspect.isfunction(pkg_res.raw_commands):
+                pkg_res.raw_commands(pkg_res, env['pkgs'],
+                                     rez_util.AttrDictWrapper(env), pkg_recorder)
+
             # old style:
             elif isinstance(pkg_res.raw_commands, list):
                 for cmd in pkg_res.raw_commands:
