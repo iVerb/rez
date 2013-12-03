@@ -58,6 +58,7 @@ Build the second variant only, and then install it, avoiding a rebuild:
 
 import sys
 import os
+import os.path
 import argparse
 from rez.cli import error, output
 
