@@ -82,23 +82,25 @@ def incr_bound(bound):
 
 def to_range(versions):
     """
-    Cast the passed list of versions to either an ExactVersionSet or a VersionRange
-    """
-    if not versions:
-        # empty range
-        return VersionRange([])
-    num_exact = len([v for v in versions if isinstance(v, (ExactVersion, ExactVersionSet))])
-    if num_exact > 0:
-        if num_exact != len(versions):
-            raise VersionError("Cannot mix exact and inexact versions: %s" % versions)
-        return ExactVersionSet(versions)
-    return VersionRange(versions)
+    Cast to either an ExactVersionSet or a VersionRange
 
-def to_version(version_str):
-    try:
-        return VersionRange(version_str)
-    except VersionError:
-        return ExactVersion(version_str)
+    versions : str or list of Version, VersionRange, ExactVersion, ExactVersionSet
+    """
+    if isinstance(versions, basestring):
+        try:
+            return VersionRange(versions)
+        except VersionError:
+            return ExactVersionSet(versions)
+    else:
+        if not versions:
+            # empty range
+            return VersionRange([])
+        num_exact = len([v for v in versions if isinstance(v, (ExactVersion, ExactVersionSet))])
+        if num_exact > 0:
+            if num_exact != len(versions):
+                raise VersionError("Cannot mix exact and inexact versions: %s" % versions)
+            return ExactVersionSet(versions)
+        return VersionRange(versions)
 
 class VersionError(Exception):
     """
