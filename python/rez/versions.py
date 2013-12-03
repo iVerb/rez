@@ -81,7 +81,11 @@ def incr_bound(bound):
     return bound[:-1] + tuple([incr_component(bound[-1])])
 
 def to_range(versions):
+    """
+    Cast the passed list of versions to either an ExactVersionSet or a VersionRange
+    """
     if not versions:
+        # empty range
         return VersionRange([])
     num_exact = len([v for v in versions if isinstance(v, (ExactVersion, ExactVersionSet))])
     if num_exact > 0:
@@ -89,6 +93,12 @@ def to_range(versions):
             raise VersionError("Cannot mix exact and inexact versions: %s" % versions)
         return ExactVersionSet(versions)
     return VersionRange(versions)
+
+def to_version(version_str):
+    try:
+        return VersionRange(version_str)
+    except VersionError:
+        return ExactVersion(version_str)
 
 class VersionError(Exception):
     """
@@ -292,9 +302,9 @@ class VersionRange(object):
         if isinstance(version, (list, tuple)):
             versions = [Version(v) for v in version]
             self.versions = tuple(get_versions_union(versions))
-        elif isinstance(version, Version):
+        elif type(version) is Version:  # do not want ExactVersion
             self.versions = (version,)
-        elif isinstance(version, VersionRange):
+        elif type(version) is VersionRange:  # do not want ExactVersionSet
             self.versions = version.versions
         else:
             try:
