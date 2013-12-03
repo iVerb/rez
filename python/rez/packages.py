@@ -159,6 +159,10 @@ class PackageFamily(object):
         self.name = name
         self.path = path
 
+    @property
+    def metadata(self):
+        return {}
+
     def iter_version_packages(self):
         pkg_iter = iter_resources(0,  # configuration version
                                   ['package.versionless', 'package.versioned'],
