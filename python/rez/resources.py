@@ -147,6 +147,8 @@ def load_py(stream):
     result = {}
     for k, v in g.iteritems():
         if k != '__builtins__' and (k not in __builtins__ or __builtins__[k] != v):
+            if inspect.isfunction(v) and not any(inspect.getargspec(v)):
+                v = v()
             result[k] = v
     return result
 
@@ -643,7 +645,6 @@ def load_metadata(filename, strip=False, resource_key=None, min_config_version=0
     force_config_version : int or None
         used for legacy config files that do not store a configuration version
     """
-    print "load_metadata", filename, resource_key
     metadata = load_file(filename)
     if isinstance(metadata, list):
         config_version = metadata[0].get('config_version', None)
