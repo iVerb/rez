@@ -182,9 +182,9 @@ class ExternalPackageFamily(PackageFamily):
 
     @property
     def raw_metadata(self):
-        # bypass the memcache so that non-essentials are not stripped
         if self._metadata is None:
-            self._metadata = load_metadata(self.path)
+            from rez_memcached import get_memcache
+            self._metadata = get_memcache().get_metadata(self.path)
             if isinstance(self._metadata, list):
                 family_data = self._metadata[0]
                 # copy data from main metadata into sub-sections
@@ -221,8 +221,7 @@ class ExternalPackageFamily(PackageFamily):
             yield Package(self.name, ExactVersion(''),
                           self.path,
                           0,
-                          metadata=self.metadata,
-                          stripped_metadata=self.metadata)
+                          metadata=self.metadata)
         else:
             for version in self.versions:
                 data = self.metadata
@@ -234,8 +233,7 @@ class ExternalPackageFamily(PackageFamily):
                 yield Package(self.name, version,
                               self.path,
                               0,
-                              metadata=data,
-                              stripped_metadata=data)
+                              metadata=data)
 
 class Package(object):
     """
