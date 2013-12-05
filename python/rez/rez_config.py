@@ -99,7 +99,7 @@ class PackageRequest(object):
 
         if self.version_range.is_any():
             fam = package_family(name)
-            if 'default_version' in fam.metadata:
+            if fam and 'default_version' in fam.metadata:
                 self.version_range = to_range(fam.metadata['default_version'])
 
         self.timestamp = timestamp
