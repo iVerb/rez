@@ -142,6 +142,22 @@ def load_yaml(stream):
         raise
 
 def load_py(stream):
+    """
+    load a python module into a metadata dictionary
+
+    - module-level attributes become root entries in the dictionary.
+    - module-level functions which take no arguments will be called immediately
+        and the returned value will be stored in the dictionary
+
+    for example::
+
+        config_version = 0
+        name = 'foo'
+        def requires():
+            return ['bar']
+    """
+    # TODO: support class-based design, where the attributes and methods of the
+    # class become values in the dictionary
     g = __builtins__.copy()
     exec stream in g
     result = {}
