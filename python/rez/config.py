@@ -97,11 +97,6 @@ class PackageRequest(object):
             self.version_range = self.version_range.get_inverse()
             self.name = anti_name(self.name)
 
-        if self.version_range.is_any():
-            fam = package_family(name)
-            if fam and 'default_version' in fam.metadata:
-                self.version_range = to_range(fam.metadata['default_version'])
-
         self.timestamp = timestamp
         self.resolve_mode = resolve_mode if resolve_mode is not None else RESOLVE_MODE_LATEST
         self._version_str = str(self.version_range)

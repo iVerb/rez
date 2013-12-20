@@ -7,7 +7,7 @@ import sys
 from rez.resources import iter_resources, load_metadata
 import rez.filesys as filesys
 from rez.exceptions import PkgSystemError
-from rez.versions import Version, ExactVersion, VersionRange, ExactVersionSet, VersionError
+from rez.versions import Version, ExactVersion, VersionRange, ExactVersionSet, VersionError, to_range
 
 PACKAGE_NAME_REGSTR = '[a-zA-Z][a-zA-Z0-9_]*'
 PACKAGE_NAME_REGEX = re.compile(PACKAGE_NAME_REGSTR + '$')
@@ -115,6 +115,12 @@ def iter_packages_in_range(family_name, ver_range, latest=True, timestamp=0,
     else:
         results = sorted(results, key=lambda x: x.version, reverse=False)
 
+    if ver_range.is_any():
+        fam = package_family(family_name)
+        if fam and 'default_version' in fam.metadata:
+            default_version = to_range(fam.metadata['default_version'])
+            results = [x for x in results if x.version in default_version] + \
+                      [x for x in results if x.version not in default_version]
     # find the best match, skipping dupes
     for result in results:
         if ver_range.matches_version(result.version, allow_inexact=not exact):
