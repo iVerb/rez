@@ -13,10 +13,11 @@ from . import config as rez_cli_config
 
 
 # autowrapper constants:
-_g_context_filename = 'package.context'
+_g_context_filename = 'context'
 _g_packages_filename = 'packages.txt'
 _g_dot_filename = _g_context_filename + '.dot'
 _g_tools_filename = _g_context_filename + '.tools'
+_g_source_filename = 'sources'
 _g_wrapper_pkg_prefix = '__wrapper_'
 
 def setup_parser(parser):
@@ -94,6 +95,7 @@ def resolve(opts, pkg_list, dot_file, package_paths=None):
                                       dot_file=dot_file,
                                       meta_vars=['tools'],
                                       shallow_meta_vars=['tools'])
+
     if not result:
         try:
             # TODO: change cli convention so that commands do not call sys.exit
@@ -230,10 +232,16 @@ def resolve_autowrappers(opts):
         with open(context_file, 'w') as f:
             f.write(script)
 
-        write_shell_resource(pkgdir, '.bashrc',
-                             context_file, rcfile_copy, quiet=True)
-        write_shell_resource(pkgdir, '.bash_profile',
-                             context_file, rcfile_copy, quiet=True)
+        if rcfile_copy:
+            src_files = [context_file, rcfile_copy, '$REZ_PATH/init.sh']
+        else:
+            src_files = [context_file, '$REZ_PATH/init.sh']
+
+        src_file = write_source_file(pkgdir, src_files)
+
+        spawner = BashShellSpawner(pkgdir, quiet=True)
+        spawner.write_shell_resource('.bashrc', src_file)
+        spawner.write_shell_resource('.bash_profile', src_file)
 
         # extract the tools from the context file, create the alias scripts
         tools = get_tools_from_commands(commands)
@@ -247,7 +255,7 @@ def resolve_autowrappers(opts):
             seen.add(alias)
             aliasfile = os.path.join(pkgdir, alias)
 
-            write_tool_wrapper_script(name, tool, aliasfile)
+            spawner.write_tool_wrapper_script(name, tool, aliasfile)
 
         # create the package.yaml that will put the tool wrappers on the PATH.
         # the package will resolved immediately following return of this function.
@@ -365,130 +373,160 @@ def command(opts):
     recorder.setenv('REZ_CONTEXT_FILE', context_file)
     recorder.setenv('REZ_ENV_PROMPT', '${REZ_ENV_PROMPT}%s' % opts.prompt)
 
-    spawn_child_shell(recorder, opts.tmpdir, context_file, opts.stdin,
-                      opts.rcfile, opts.quiet)
+    spawner = BashShellSpawner(opts.tmpdir, opts.quiet)
+    spawner.spawn_child_shell(recorder, context_file, opts.stdin, opts.rcfile)
     recorder.command("rm -rf %s" % opts.tmpdir)
 
     cmd = rex.interpret(recorder, shell=opts.shell, output_style='eval')
     output(cmd)
 
-# bash utilities
-# TODO: Add to an appropriate base-class
-def write_tool_wrapper_script(pkg_name, tool_name, filepath):
-    """
-    write an executable shell script which wraps a "tool" (any executable registered
-    by a package).
-    By default, the wrapper script will source a rez context file and then run
-    the tool.
-    """
-    import stat
-    script = textwrap.dedent("""\
-        #!/bin/bash
+class ShellSpawner(object):
+    def __init__(self, tmpdir, quiet=False):
+        self.tmpdir = tmpdir
+        self.quiet = quiet
 
-        export REZ_WRAPPER_NAME='%(pkg_name)s'
-        export REZ_WRAPPER_ALIAS='%(tool_name)s'
+    def write_tool_wrapper_script(self, pkg_name, tool_name, filepath):
+        """
+        Writes an executable shell script which wraps a "tool" (any executable registered
+        by a package).
+        By default, the wrapper script will source a rez context file and then run
+        the tool.
+        """
+        raise NotImplementedError
 
-        if [ "${!#}" == "---i" ]; then
-            # interactive mode: drop into a new shell
-            # the wrapped .bashrc/.bash_profile resource files will source the context file
-            export REZ_ENV_PROMPT="${REZ_ENV_PROMPT}%(pkg_name)s>"
-            export HOME=`dirname $0`
-            /bin/bash
-            exit $?
-        fi
+    def write_shell_resource(self, filename, src_file):
+        """
+        Writes a shell script which should get sourced on initialization of a new shell
+        and perform the necessary steps to setup the rez environment.
 
-        source `dirname $0`/.bashrc
+        The script must be named after an automatically sourced resource file for
+        this shell (e.g. .bashrc, .bash_profile, .tcshrc, etc)
 
-        if [ "${!#}" == "---s" ]; then
-            /bin/bash -s
-            exit $?
-        else
-            # run the actual tool
-            %(tool_name)s "$@"
-            exit $?
-        fi
-        """ % {'pkg_name': pkg_name,
-               'tool_name': tool_name,
-               'context_file': _g_context_filename})
+        Before spawn_child_resource() creates the new shell, it should set $HOME
+        to the directory where this script resides. This should ensure that the
+        shell will source it.  The script will restore the $HOME variable, and call
+        the real resource script after which it was named.
 
-    with open(filepath, 'w') as f:
-        f.write(script)
+        Parameters
+        ----------
+        filename : string
+            name of resource file
+        src_file : string
+            file written by write_source_file() containing all source statements
+        """
+        raise NotImplementedError
 
-    os.chmod(filepath, stat.S_IXUSR | stat.S_IXGRP | stat.S_IRUSR | stat.S_IRGRP)
+    def spawn_child_shell(self, recorder, context_file, stdin=False, rcfile=None):
+        """
+        Spawns the new shell, sourcing the baked context file.
+        """
+        raise NotImplementedError
 
-def write_shell_resource(tmpdir, filename, context_file, rcfile=None, quiet=False):
-    """
-    Write a shell script which should get sourced on initialization of a new shell
-    and perform the necessary steps to setup the rez environment.
+    def write_source_file(self, src_files):
+        """
+        Creates a single file containing all scripts that need to be sourced by the
+        shell.  Should be sourced by the file generated in write_shell_resource()
 
-    The script must be named after an automatically sourced resource file for
-    this shell (e.g. .bashrc, .bash_profile, .tcshrc, etc)
+        Parameters
+        ----------
+        src_files : list of strings
+            list of paths to be sourced
+        """
+        fullpath = os.path.join(self.tmpdir, _g_source_filename)
+        with open(fullpath, 'w') as f:
+            f.write('\n'.join(get_source_lines(src_files)))
+        return fullpath
 
-    Before spawn_child_resource() creates the new shell, it should set $HOME
-    to the directory where this script resides. This should ensure that the
-    shell will source it.  The script will restore the $HOME variable, and call
-    the real resource script after which it was named.
-    """
-    script = textwrap.dedent("""\
-        # reset HOME directory
-        export HOME=%(home)s
+    @staticmethod
+    def get_source_lines(src_files):
+        return ["source " + src_file for src_file in src_files]
 
-        # source overridden script
-        [[ -f ~/%(filename)s ]] && source ~/%(filename)s
+class BashShellSpawner(ShellSpawner)
+    @staticmethod
+    def write_tool_wrapper_script(pkg_name, tool_name, filepath):
+        import stat
+        script = textwrap.dedent("""\
+            #!/bin/bash
 
-        # source rez context file
-        source %(context_file)s
-        source $REZ_PATH/init.sh
+            export REZ_WRAPPER_NAME='%(pkg_name)s'
+            export REZ_WRAPPER_ALIAS='%(tool_name)s'
 
-        # setup prompt
-        source $REZ_PATH/bin/_complete
-        PS1="\[\e[1m\]$REZ_ENV_PROMPT\[\e[0m\] $PS1"
-        """ % {'home': os.environ['HOME'],
-               'filename': filename,
-               'context_file': context_file})
+            if [ "${!#}" == "---i" ]; then
+                # interactive mode: drop into a new shell
+                # the wrapped .bashrc/.bash_profile resource files will source the context file
+                export REZ_ENV_PROMPT="${REZ_ENV_PROMPT}%(pkg_name)s>"
+                export HOME=`dirname $0`
+                /bin/bash
+                exit $?
+            fi
 
-    if rcfile:
-        script += "source %s\n" % rcfile
+            source `dirname $0`/.bashrc
 
-    if not quiet:
-        script += "echo\n"
-        script += "echo You are now in a new environment.\n"
-        script += "rez-context-info\n"
+            if [ "${!#}" == "---s" ]; then
+                /bin/bash -s
+                exit $?
+            else
+                # run the actual tool
+                %(tool_name)s "$@"
+                exit $?
+            fi
+            """ % {'pkg_name': pkg_name,
+                   'tool_name': tool_name,
+                   'context_file': _g_context_filename})
 
-    fullpath = os.path.join(tmpdir, filename)
-    with open(fullpath, 'w') as f:
-        f.write(script)
-    return fullpath
+        with open(filepath, 'w') as f:
+            f.write(script)
 
-def spawn_child_shell(recorder, tmpdir, context_file, stdin=False, rcfile=None,
-                      quiet=False):
-    """
-    spawn the new shell, sourcing the bake file
-    """
-    if stdin:
-        recorder.command("source %s" % context_file)
-        if not rcfile:
-            # (bash-specific):
-            if os.path.exists(os.path.expanduser('~/.bashrc')):
-                recorder.command("source ~/.bashrc &> /dev/null")
+        os.chmod(filepath, stat.S_IXUSR | stat.S_IXGRP | stat.S_IRUSR | stat.S_IRGRP)
+
+    def write_shell_resource(self, filename, src_file):
+        script = textwrap.dedent("""\
+            # reset HOME directory
+            export HOME=%(home)s
+
+            # source overridden script
+            [[ -f ~/%(filename)s ]] && source ~/%(filename)s
+
+            # source rez context file
+            source %(src_file)s
+
+            # setup prompt
+            source $REZ_PATH/bin/_complete
+
+            PS1="\[\e[1m\]$REZ_ENV_PROMPT\[\e[0m\] $PS1"
+            """ % {'home': os.environ['HOME'],
+                   'filename': filename,
+                   'src_file': src_file})
+
+        if not self.quiet:
+            script += "echo\n"
+            script += "echo You are now in a new environment.\n"
+            script += "rez-context-info\n"
+
+        fullpath = os.path.join(self.tmpdir, filename)
+        with open(fullpath, 'w') as f:
+            f.write(script)
+        return fullpath
+
+    def spawn_child_shell(self, recorder, context_file, stdin=False, rcfile=None):
+        if rcfile:
+            src_files = [context_file, rcfile, '$REZ_PATH/init.sh']
         else:
-            recorder.command("source %s" % rcfile)
+            src_files = [context_file, '$REZ_PATH/init.sh']
 
-        # ensure that rez-config is available no matter what (eg .bashrc might not exist,
-        # rcfile might not source rez-config)
-        # (bash-specific):
-        recorder.command("source $REZ_PATH/init.sh")
-        recorder.command("bash -s")
+        src_file = self.write_source_file(tmpdir, src_files)
+        self.write_shell_resource('.bashrc',
+                                  src_file)
+        self.write_shell_resource('.bash_profile',
+                                  src_file)
 
-    else:
-        write_shell_resource(tmpdir, '.bashrc',
-                             context_file, rcfile, quiet=quiet)
-        write_shell_resource(tmpdir, '.bash_profile',
-                             context_file, rcfile, quiet=quiet)
-
-        recorder.setenv("HOME", tmpdir)
-        # (bash-specific):
-        recorder.command("bash")
+        if stdin:
+            for cmd in self.get_source_lines(src_files):
+                recorder.command(cmd)
+            recorder.command("/bin/bash -s")
+        else:
+            recorder.setenv("HOME", tmpdir)
+            recorder.command("/bin/bash")
 
 
 #    Copyright 2008-2012 Dr D Studios Pty Limited (ACN 127 184 954) (Dr. D Studios)
