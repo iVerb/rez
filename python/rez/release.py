@@ -3,7 +3,8 @@ rez-release
 
 A tool for releasing rez - compatible projects centrally
 """
-
+# TODO plugin-ize this.
+from __future__ import with_statement
 import sys
 import os
 import os.path
@@ -12,14 +13,21 @@ import inspect
 import time
 import subprocess
 import smtplib
+import textwrap
+import re
 from email.mime.text import MIMEText
 
-from rez.util import remove_write_perms, copytree, get_epoch_time, safe_chmod, render_template
+from rez import module_root_path
+from rez.util import remove_write_perms, copytree, get_epoch_time, \
+    safe_chmod, render_template
 from rez.resources import load_metadata
+from rez.settings import settings
+from rez.system import system
 import rez.public_enums as enums
 import rez.versions as versions
 import rez.rex as rex
 import rez.builds as builds
+
 
 ##############################################################################
 # Globals
@@ -49,8 +57,6 @@ class RezReleaseUnsupportedMode(RezReleaseError):
 # Constants
 ##############################################################################
 
-REZ_RELEASE_PATH_ENV_VAR = "REZ_RELEASE_PACKAGES_PATH"
-EDITOR_ENV_VAR = "REZ_RELEASE_EDITOR"
 RELEASE_COMMIT_FILE = "rez-release-commit.tmp"
 
 
@@ -106,8 +112,7 @@ def release_from_path(path, commit_message, njobs, build_time, allow_not_latest,
             filepath containing the project to be released
     commit_message:
             None, or message string to write to svn, along with changelog.
-            If 'commit_message' None, the user will be prompted for input using the
-            editor specified by $REZ_RELEASE_EDITOR.
+            If 'commit_message' None, the user will be prompted for input.
     njobs:
             number of threads to build with; passed to make via -j flag
     build_time:
@@ -118,7 +123,7 @@ def release_from_path(path, commit_message, njobs, build_time, allow_not_latest,
     cls = dict(_release_classes)[mode]
     try:
         rel = cls(path)
-    except RezReleaseUnsupportedMode as err:
+    except RezReleaseUnsupportedMode, err:
         print err
         return
     rel.release(commit_message, njobs, build_time, allow_not_latest)
@@ -163,7 +168,7 @@ def send_release_email(subject, body):
         s = smtplib.SMTP(smtphost, smtpport)
         s.sendmail(from_, recipients, msg.as_string())
         print 'email(s) sent.'
-    except Exception as e:
+    except Exception, e:
         print >> sys.stderr, "Emailing failed: %s" % str(e)
 
 ##############################################################################
@@ -194,6 +199,8 @@ class RezReleaseMode(object):
             - build
             - install
             - post_install
+            - get_tag
+            - get_version_from_tag
     '''
     name = 'base'
 
@@ -213,6 +220,7 @@ class RezReleaseMode(object):
         # for cached property: False indicates it has not been cached
         # (since it may be None after caching)
         self._last_tagged_version = False
+        self._tag_name = False
 
         # filled in release()
         self.commit_message = None
@@ -275,8 +283,7 @@ class RezReleaseMode(object):
 
     def _get_commit_message(self):
         '''
-        Prompt user for a commit message using the editor specified by
-        $REZ_RELEASE_EDITOR.
+        Prompt user for a commit message using the configured editor.
 
         The starting value of the editor will be the message passed on the
         command-line, if given.
@@ -362,6 +369,28 @@ class RezReleaseMode(object):
                 remove_write_perms(root)
 
     # VCS and tagging ---------
+    @property
+    def tag_name(self):
+        '''
+        Cached property for the tag name.
+        '''
+        if self._tag_name is False:
+            # False means the value has not been cached yet
+            self._tag_name = self.get_tag_name()
+        return self._tag_name
+
+    def get_tag_name(self):
+        '''
+        Return the tag name for the current release as a string.
+        '''
+        return str(self.metadata['version'].version)
+
+    def get_version_from_tag(self, tag):
+        '''
+        Return the version (as a Version object) from the tag.
+        '''
+        return versions.Version(tag)
+
     def get_url(self):
         '''
         Return a string for the remote url that best identifies the source of
@@ -409,7 +438,7 @@ class RezReleaseMode(object):
         found_tag = False
         for tag in self.get_tags():
             try:
-                ver = versions.Version(tag)
+                ver = self.get_version_from_tag(tag)
             except Exception:
                 continue
             if ver > latest_ver:
@@ -440,7 +469,7 @@ class RezReleaseMode(object):
 
         # FIXME: is the tag put under version control really our most reliable source
         # for previous released versions? Can't we query the versions of our package
-        # on $REZ_RELEASE_PACKAGES_PATH?
+        # on settings.release_packages_path?
         if self.metadata['version'] <= self.last_tagged_version:
             raise RezReleaseError("cannot release: current version '" + self.metadata['version'] +
                                   "' is not greater than the latest tag '" + last_tag_str +
@@ -579,7 +608,7 @@ class RezReleaseMode(object):
         print
         print "rez-build: invoking rez-config with args:"
         print "requested packages: %s" % (', '.join(self.requires + (variant or [])))
-        print "package search paths: %s" % (os.environ['REZ_PACKAGES_PATH'])
+        print "package search paths: %s" % os.pathsep.join(settings.packages_path)
 
         try:
             import rez.config
@@ -591,8 +620,7 @@ class RezReleaseMode(object):
             # FIXME: raise error here if result is None, or use unguarded resolve
             commands = result[1]
 
-            # TODO: support other shells
-            script = rex.interpret(commands, shell='bash')
+            script = rex.interpret(commands, shell=system.shell)
             with open(env_bake_file, 'w') as f:
                 f.write(script)
         except Exception, err:
@@ -615,9 +643,9 @@ class RezReleaseMode(object):
         recorder = rex.CommandRecorder()
         # need to expose rez-config's cmake modules in build env
         recorder.prependenv('CMAKE_MODULE_PATH',
-                            os.path.join(rez.filesys._g_rez_path, 'cmake'))
+                            os.path.join(module_root_path, 'cmake'))
         # make sure we can still use rez-config in the build env!
-        recorder.appendenv('PATH', os.path.join(rez.filesys._g_rez_path, 'bin'))
+        recorder.appendenv('PATH', os.path.join(module_root_path, 'bin'))
 
         recorder.info()
         recorder.info('rez-build: in new env:')
@@ -626,6 +654,8 @@ class RezReleaseMode(object):
         # set env-vars that CMakeLists.txt files can reference, in this way
         # we can drive the build from the package.yaml file
         recorder.setenv('REZ_BUILD_ENV', '1')
+        recorder.setenv('REZ_LOCAL_PACKAGES_PATH', settings.local_packages_path)
+        recorder.setenv('REZ_RELEASE_PACKAGES_PATH', settings.release_packages_path)
         recorder.setenv('REZ_BUILD_PROJECT_VERSION', self.metadata['version'])
         recorder.setenv('REZ_BUILD_PROJECT_NAME', self.metadata['name'])
 
@@ -673,7 +703,7 @@ class RezReleaseMode(object):
             # which? this is from the original code...
             recorder.setenv('REZ_ENV_PROMPT', ">$REZ_ENV_PROMPT")
             recorder.setenv('REZ_ENV_PROMPT', "BUILD>")
-            recorder.command('/bin/bash --rcfile %s/bin/rez-env-bashrc' % rez.filesys._g_rez_path)
+            recorder.command('/bin/bash --rcfile %s/bin/rez-env-bashrc' % module_root_path)
             script = rex.interpret(recorder, shell='bash',
                                    verbose=['command'])
 
@@ -695,17 +725,12 @@ class RezReleaseMode(object):
         Fill out variables based on metadata
         '''
         self.release_install = central_release
-
         if self.release_install:
             self.base_build_dir = os.path.join(self.root_dir, 'build', 'rez-release')
-            install_var = REZ_RELEASE_PATH_ENV_VAR
+            self.base_install_dir = settings.release_packages_path
         else:
             self.base_build_dir = os.path.join(self.root_dir, 'build')
-            install_var = "REZ_LOCAL_PACKAGES_PATH"
-
-        self.base_install_dir = os.getenv(install_var)
-        if not self.base_install_dir:
-            raise RezReleaseError("$" + install_var + " is not set.")
+            self.base_install_dir = settings.local_packages_path
 
         self.metadata = self.get_metadata()
 
@@ -742,10 +767,7 @@ class RezReleaseMode(object):
         os.makedirs(self.base_build_dir)
 
         if (self.commit_message is None):
-            # get preferred editor for commit message
-            self.editor = os.getenv(EDITOR_ENV_VAR)
-            if not self.editor:
-                raise RezReleaseError("rez-release: $" + EDITOR_ENV_VAR + " is not set.")
+            self.editor = settings.editor
             self.commit_message = ''
 
         # check we're in a state to release (no modified/out-of-date files etc)
@@ -963,7 +985,7 @@ class SvnRezReleaseMode(RezReleaseMode):
         # variables filled out in pre_build()
         self.tag_url = None
 
-    def get_tag_url(self, version=None):
+    def get_tag_url(self, tag_name=None):
         # find the base path, ie where 'trunk', 'branches', 'tags' should be
         pos_tr = self.this_url.find("/trunk")
         pos_br = self.this_url.find("/branches")
@@ -974,7 +996,7 @@ class SvnRezReleaseMode(RezReleaseMode):
         tag_url = base_url + "/tags"
 
         if version:
-            tag_url += '/' + str(version)
+            tag_url += '/' + tag_name
         return tag_url
 
     def svn_url_exists(self, url):
@@ -1061,7 +1083,7 @@ class SvnRezReleaseMode(RezReleaseMode):
         return latest_ver
 
     def validate_version(self):
-        self.tag_url = self.get_tag_url(self.version)
+        self.tag_url = self.get_tag_url(tag_name=self.tag_name)
         # check that this tag does not already exist
         if self.svn_url_exists(self.tag_url):
             raise RezReleaseError("cannot release: the tag '"
@@ -1173,7 +1195,7 @@ class HgRezReleaseMode(RezReleaseMode):
             assert hg('root')[0] == self.root_dir
         except AssertionError:
             raise RezReleaseUnsupportedMode("'" + self.root_dir + "' is not the root of a mercurial working copy")
-        except Exception as err:
+        except Exception, err:
             raise RezReleaseUnsupportedMode("failed to call hg binary: " + str(err))
 
         self.patch_path = os.path.join(hgdir, 'patches')
@@ -1204,12 +1226,12 @@ class HgRezReleaseMode(RezReleaseMode):
         '''
         if self.patch_path:
             # patch queue
-            hg('tag', '-f', str(self.metadata['version']),
+            hg('tag', '-f', self.tag_name,
                '--message', self.commit_message, '--mq')
             # use a bookmark on the main repo since we can't change it
-            hg('bookmark', '-f', str(self.metadata['version']))
+            hg('bookmark', '-f', self.tag_name)
         else:
-            hg('tag', '-f', str(self.metadata['version']))
+            hg('tag', '-f', self.tag_name)
 
     def get_tags(self):
         tags = [line.split()[0] for line in hg('tags')]
@@ -1250,6 +1272,120 @@ class HgRezReleaseMode(RezReleaseMode):
 
 
 register_release_mode(HgRezReleaseMode)
+
+class GitRezReleaseMode(RezReleaseMode):
+    name = 'git'
+    
+    def __init__(self, path):
+        super(GitRezReleaseMode, self).__init__(path)
+
+        try:
+            import git
+        except ImportError:
+            raise RezReleaseUnsupportedMode("git python module must be installed to properly release a project under git.")
+
+        try:
+            self.repo = git.Repo(path, odbt=git.GitCmdObjectDB)
+        except git.exc.InvalidGitRepositoryError:
+            raise RezReleaseUnsupportedMode("'" + path + "' is not a git repository")
+        
+    def git_ahead_of_remote(self, repo):
+        """
+        Checks that the git repo (git.Repo instance) is
+        not ahead of its configured remote. Specifically we
+        check that the message that git status returns does not
+        contain "# Your branch is ahead of '[a-zA-Z/]+' by \d+ commit"
+        """
+        status_message = self.repo.git.status()
+        return re.search(r"# Your branch is ahead of '.+' by \d+ commit", status_message) != None
+
+    def git_checkout_index_submodules(self, submodules, subdir):
+        """
+        Recursively runs checkout-index on each submodule and its submodules and so forth,
+        duplicating the submodule directory tree in subdir
+        submodules - Iterable list of submodules
+        subdir - The target base directory that should contain each
+                    of the checkout-indexed submodules
+        """
+        for submodule in submodules:
+            submodule_subdir = os.path.join(subdir, submodule.path) + os.sep
+            if not os.path.exists(submodule_subdir):
+                os.mkdir(submodule_subdir)
+            submodule_repo = git.Repo(submodule.abspath)
+            print("rez-release: git-exporting (checkout-index) clean copy of (submodule: " + submodule.path + ") to " + submodule_subdir + "...")
+            submodule_repo.git.checkout_index(a=True, prefix=submodule_subdir)
+            self.git_checkout_index_submodules(submodule_repo.submodules, submodule_subdir)
+
+    def validate_repostate(self):
+        if self.repo.bare:
+            raise RezReleaseError("'" + self.root_dir + "' is a bare git repository")
+
+        untrackedFiles = self.repo.untracked_files
+        if untrackedFiles:
+            print "The following files are Untracked:\n"
+            for file in untrackedFiles:
+                print file
+                raise RezReleaseError("There are untracked files.")
+
+        workingCopyDiff = self.repo.index.diff(None)
+        if workingCopyDiff:
+            print "The following files were modified:\n"
+            for diff in workingCopyDiff:
+                print diff.a_blob.path
+                raise RezReleaseError("There are modified files.")
+
+        try:
+            package = "package.yaml"
+            self.repo.head.reference.commit.tree[package]
+        except KeyError:
+            raise RezReleaseError(package + " is not under source control")
+
+        if self.repo.is_dirty() or self.git_ahead_of_remote(self.repo):
+            raise RezReleaseError("'" + self.root_dir + "' is not in a state to release - you may need to " + \
+                "git commit and/or git push and/or git pull:\n" + self.repo.git.status())
+
+        try:
+            tag = self.repo.tags[self.tag_name]
+            raise RezReleaseError("cannot release: the tag '" + self.tag_name + "' already exists in git." + \
+                " You may need to up your version, git-commit and try again.")
+        except IndexError, e:
+            pass
+
+    def get_changelog(self):
+        result = self.last_tagged_version
+        if not result:
+            return "Initial Release - No Previous Tag Found."
+        changelog = self.repo.git.log("%s-%s.." % (self.metadata['name'], result), no_merges=True)
+        return changelog if changelog else "No changes since last tag."
+
+    def create_release_tag(self):
+        remote = self.repo.remote()
+        print("rez-release: creating project tag: " + self.tag_name + " and pushing to: " + remote.url + "...")
+
+        self.repo.create_tag(self.tag_name, a=True, m=self.commit_message)
+
+        push_result = remote.push()
+        if len(push_result) == 0:
+            print("failed to push to remote, you have to run 'git push' manually.")
+        push_result = remote.push(tags=True)
+        if len(push_result) == 0:
+            print("failed to push the new tag to the remote, you have to run 'git push --tags' manually.")
+
+    def get_tags(self):
+        return [tag.name for tag in self.repo.tags if tag.name.split("-")[0] == self.metadata['name']]
+
+    def get_tag_meta_str(self):
+        return self.repo.remote().url + "#" + self.repo.active_branch.tracking_branch().name.split("/")[-1] \
+            + "#" + self.repo.head.reference.commit.hexsha + "#(refs/tags/" + self.tag_name + ")"
+
+    def copy_source(self, build_dir):
+        try:
+            self.repo.git.checkout_index(a=True, prefix=build_dir)
+            self.git_checkout_index_submodules(self.repo.submodules, build_dir)
+        except Exception, e:
+            raise RezReleaseError("rez-release: git checkout-index failed: " + str(e))
+
+register_release_mode(GitRezReleaseMode)
 
 #    Copyright 2008-2012 Dr D Studios Pty Limited (ACN 127 184 954) (Dr. D Studios)
 #

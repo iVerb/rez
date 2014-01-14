@@ -9,7 +9,7 @@ import UserDict
 import inspect
 #import textwrap
 import pipes
-import rez.platform_ as plat
+from rez.settings import settings
 
 
 ATTR_REGEX_STR = r"([_a-z][_a-z0-9]*)([._a-z][_a-z0-9]*)*"
@@ -158,6 +158,25 @@ class Setenv(EnvCommand):
         return result
 Setenv.register()
 
+class Resetenv(EnvCommand):
+    name = 'resetenv'
+
+    @property
+    def friends(self):
+         if len(self.args) == 3:
+            return self.args[2]
+
+    def pre_exec(self, interpreter):
+        key, value, friends = self.args
+        if isinstance(value, (list, tuple)):
+            value = interpreter._env_sep(key).join(value)
+            self.args = key, value, friends
+
+    def post_exec(self, interpreter, result):
+        interpreter._set_env_vars.add(self.key)
+        return result
+Resetenv.register()
+
 class Prependenv(Setenv):
     name = 'prependenv'
 Prependenv.register()
@@ -226,6 +245,9 @@ class CommandRecorder(object):
 
     def unsetenv(self, key):
         self.commands.append(Unsetenv(key))
+
+    def resetenv(self, key, value, friends=None):
+        self.commands.append(Resetenv(key, self._expand(value), friends))
 
     def prependenv(self, key, value):
         self.commands.append(Prependenv(key, self._expand(value)))
@@ -348,6 +370,9 @@ class CommandInterpreter(object):
     def unsetenv(self, key):
         raise NotImplementedError
 
+    def resetenv(self, key, value, friends=None):
+        raise NotImplementedError
+
     def prependenv(self, key, value):
         raise NotImplementedError
 
@@ -386,10 +411,14 @@ class SH(Shell):
     def unsetenv(self, key):
         return "unset %s" % (key,)
 
+    def resetenv(self, key, value, friends=None):
+        return self.setenv(key, value)
+
     def prependenv(self, key, value):
-        return 'export {key}="{value}{sep}${key}"'.format(key=key,
-                                                          sep=self._env_sep(key),
-                                                          value=value)
+        return 'export %(key)s="%(value)s%(sep)s$%(key)s"' % dict(
+            key=key,
+            value=value,
+            sep=self._env_sep(key))
 
         # if key in self._set_env_vars:
         #     return 'export {key}="{value}{sep}${key}"'.format(key=key,
@@ -412,9 +441,11 @@ class SH(Shell):
         #                                                                                            value=value)
 
     def appendenv(self, key, value):
-        return 'export {key}="${key}{sep}{value}"'.format(key=key,
-                                                          sep=self._env_sep(key),
-                                                          value=value)
+        return 'export %(key)s="$%(key)s%(sep)s%(value)s"' % dict(
+            key=key,
+            value=value,
+            sep=self._env_sep(key))
+
         # if key in self._set_env_vars:
         #     return 'export {key}="${key}{sep}{value}"'.format(key=key,
         #                                                       sep=self._env_sep(key),
@@ -438,7 +469,7 @@ class SH(Shell):
     def alias(self, key, value):
         # bash aliases don't export to subshells; so instead define a function,
         # then export that function
-        return "{key}() { {value}; };export -f {key};".format(key=key,
+        return "{key}() {{ {value}; }};export -f {key};".format(key=key,
                                                               value=value)
 
     def info(self, value):
@@ -467,15 +498,25 @@ class SH(Shell):
 
 class CSH(SH):
     def setenv(self, key, value):
-        return 'setenv %s "%s"' % (key, value)
+        if re.search("^\${?[A-Z_]+}?$", value):
+            return """if ($?{value_}) then
+    setenv {key} "{value}"
+else
+    setenv {key}
+endif
+""".format(key=key, sep=self._env_sep(key), value=value, value_=value[1:])
+        else:
+            return 'setenv %s "%s"' % (key, value)
 
     def unsetenv(self, key):
         return "unsetenv %s" % (key,)
 
+    def resetenv(self, key, value, friends=None):
+        return self.setenv(key, value)
+
     def prependenv(self, key, value):
-        return 'setenv {key}="{value}{sep}${key}"'.format(key=key,
-                                                          sep=self._env_sep(key),
-                                                          value=value)
+        return 'setenv {key} {value}{sep}${{{key}}}'.format(key=key, sep=self._env_sep(key), value=value)
+
 #         if key in self._set_env_vars:
 #             return 'setenv {key}="{value}{sep}${key}"'.format(key=key,
 #                                                               sep=self._env_sep(key),
@@ -492,9 +533,8 @@ class CSH(SH):
 #                             value=value))
 
     def appendenv(self, key, value):
-        return 'setenv {key}="${key}{sep}{value}"'.format(key=key,
-                                                          sep=self._env_sep(key),
-                                                          value=value)
+        return 'setenv {key} ${{{key}}}{sep}{value}'.format(key=key, sep=self._env_sep(key), value=value)
+
 #         if key in self._set_env_vars:
 #             return 'setenv {key}="${key}{sep}{value}"'.format(key=key,
 #                                                               sep=self._env_sep(key),
@@ -515,12 +555,13 @@ class CSH(SH):
 
 class Python(CommandInterpreter):
     '''Execute commands in the current python session'''
-    def __init__(self, respect_parent_env=False, environ=None):
-        CommandInterpreter.__init__(self, respect_parent_env)
+    def __init__(self, respect_parent_env=False, environ=None, output_style='file', env_sep_map=None, verbose=False):
+        CommandInterpreter.__init__(self, output_style=output_style, env_sep_map=env_sep_map, verbose=verbose)
         self._environ = os.environ if environ is None else environ
 
     def _expand(self, value):
-        return EnvExpand(value).safe_substitute(**self._environ)
+        e = self._environ if isinstance(self._environ, dict) else dict(self._environ.items())
+        return EnvExpand(value).safe_substitute(**e)
 
     def _get_env_list(self, key):
         return self._environ[key].split(self._env_sep(key))
@@ -534,9 +575,14 @@ class Python(CommandInterpreter):
 
     def setenv(self, key, value):
         self._environ[key] = self._expand(value)
+        settings.env_var_changed(key)
 
     def unsetenv(self, key):
         self._environ.pop(key)
+        settings.env_var_changed(key)
+
+    def resetenv(self, key, value, friends=None):
+        self.setenv(key, value)
 
     def prependenv(self, key, value):
         value = self._expand(value)
@@ -546,12 +592,10 @@ class Python(CommandInterpreter):
             self._set_env_list(key, parts)
         else:
             self._environ[key] = value
+
         # special case: update current python process
-        if key == 'REZ_PACKAGES_PATH':
-            import rez.filesys
-            rez.filesys._g_syspaths.insert(0, value)
-            rez.filesys._g_syspaths_nolocal.insert(0, value)
-        elif key == 'PYTHONPATH':
+        settings.env_var_changed(key)
+        if key == 'PYTHONPATH':
             sys.path.insert(0, value)
 
     def appendenv(self, key, value):
@@ -562,12 +606,10 @@ class Python(CommandInterpreter):
             self._set_env_list(key, parts)
         else:
             self._environ[key] = value
+
         # special case: update current python process
-        if key == 'REZ_PACKAGES_PATH':
-            import rez.filesys
-            rez.filesys._g_syspaths.append(value)
-            rez.filesys._g_syspaths_nolocal.append(value)
-        elif key == 'PYTHONPATH':
+        settings.env_var_changed(key)
+        if key == 'PYTHONPATH':
             sys.path.append(value)
 
     def alias(self, key, value):
@@ -648,6 +690,9 @@ class WinShell(Shell):
         cmd += 'set %s=%s\n' % (key, value)
         return cmd
 
+    def resetenv(self, key, value, friends=None):
+        return self.setenv(key, value)
+
     def unsetenv(self, key):
         # env vars are not cleared until restart!
         if self.set_global:
@@ -663,25 +708,22 @@ class WinShell(Shell):
 #     def system_env(self, key):
 #         return executable_output(['setenv', '-m', key])
 
-shells = {'bash': SH,
-          'sh': SH,
-          'tcsh': CSH,
-          'csh': CSH,
-          '-csh': CSH,  # For some reason, inside of 'screen', ps -o args reports -csh...
-          'python': Python,
-          #          'DOS': WinShell
-          }
 
-def get_shell_name():
-    proc = subprocess.Popen(['ps', '-o', 'args=', '-p', str(os.getppid())],
-                            stdout=subprocess.PIPE)
-    output = proc.communicate()[0]
-    return output.strip().split()[0]
+shells = dict( \
+    bash=SH,
+    sh=SH,
+    tcsh=CSH,
+    csh=CSH,
+    python=Python)
 
 def get_command_interpreter(shell=None):
     if shell is None:
-        shell = get_shell_name()
-    return shells[os.path.basename(shell)]
+        from rez.system import system
+        shell = system.shell
+    if shell in shells:
+        return shells[shell]
+    else:
+        raise ValueError("Unknown shell '%s'" % shell)
 
 def interpret(commands, shell=None, **kwargs):
     """
@@ -697,50 +739,7 @@ def interpret(commands, shell=None, **kwargs):
 #===============================================================================
 
 if sys.version_info < (2, 7, 4):
-    # TAKEN from os.posixpath in python 2.7
-    # Join two paths, normalizing ang eliminating any symbolic links
-    # encountered in the second path.
-    def _joinrealpath(path, rest, seen):
-        from os.path import isabs, sep, curdir, pardir, split, join, islink
-        if isabs(rest):
-            rest = rest[1:]
-            path = sep
-
-        while rest:
-            name, _, rest = rest.partition(sep)
-            if not name or name == curdir:
-                # current dir
-                continue
-            if name == pardir:
-                # parent dir
-                if path:
-                    path, name = split(path)
-                    if name == pardir:
-                        path = join(path, pardir, pardir)
-                else:
-                    path = pardir
-                continue
-            newpath = join(path, name)
-            if not islink(newpath):
-                path = newpath
-                continue
-            # Resolve the symbolic link
-            if newpath in seen:
-                # Already seen this path
-                path = seen[newpath]
-                if path is not None:
-                    # use cached value
-                    continue
-                # The symlink is not resolved, so we must have a symlink loop.
-                # Return already resolved part + rest of the path unchanged.
-                return join(newpath, rest), False
-            seen[newpath] = None  # not resolved symlink
-            path, ok = _joinrealpath(path, os.readlink(newpath), seen)
-            if not ok:
-                return join(path, rest), False
-            seen[newpath] = path  # resolved symlink
-
-        return path, True
+    from rez.contrib._joinrealpath import _joinrealpath
 else:
     from os.path import _joinrealpath
 
@@ -813,7 +812,7 @@ class EnvironRecorderDict(UserDict.DictMixin):
         return self.command_recorder
 
     def do_list_override(self, key):
-        if key not in self.environ:
+        if key not in self.environ and key not in self:
             return True
         if self._override_existing_lists and key not in self._var_cache:
             return True
@@ -864,6 +863,9 @@ class EnvironmentVariable(object):
         else:
             self._environ_map.python_interpreter.appendenv(self.name, value)
             self._environ_map.command_recorder.appendenv(self.name, value)
+
+    def reset(self, value, friends=None):
+        self._environ_map.command_recorder.resetenv(self.name, value, friends=friends)
 
     def set(self, value):
         self._environ_map.command_recorder.setenv(self.name, value)
@@ -955,18 +957,12 @@ class RexNamespace(dict):
             value in `environ` and effectively act as a setenv operation.
             If False, pre-existing values will be appended/prepended to as usual.
         """
-        self.command_recorder = CommandRecorder()
-        self.command_recorder._expandfunc = self.expand
-        self.environ = EnvironRecorderDict(self.command_recorder,
-                                           environ,
-                                           override_existing_lists=env_overrides_existing_lists)
         self.vars = vars if vars is not None else {}
+        self.environ = EnvironRecorderDict(environ=environ,
+                                           override_existing_lists=env_overrides_existing_lists)
+        self.set_command_recorder(CommandRecorder())
         self.custom = ObjectNameDict()
         self.custom.data = self.vars  # assigning to data directly keeps a live link
-
-        # load commands into environment
-        for cmd, func in self.command_recorder.get_command_methods():
-            self.vars[cmd] = func
 
     def expand(self, value):
         value = CustomExpand(value).substitute(self.custom)
@@ -976,6 +972,8 @@ class RexNamespace(dict):
         self.command_recorder = recorder
         self.command_recorder._expandfunc = self.expand
         self.environ.set_command_recorder(recorder)
+        for cmd, func in self.command_recorder.get_command_methods():
+            self.vars[cmd] = func
 
     def get_command_recorder(self):
         return self.command_recorder
