@@ -3,106 +3,42 @@ import subprocess
 import sys
 import posixpath
 import ntpath
-import string
+from string import Formatter, Template
 import re
 import UserDict
-import inspect
 #import textwrap
 import pipes
 from rez.settings import settings
-
+import rez.util as util
 
 ATTR_REGEX_STR = r"([_a-z][_a-z0-9]*)([._a-z][_a-z0-9]*)*"
 FUNC_REGEX_STR = r"\([a-z0-9_\-.]*\)"
 
 DEFAULT_ENV_SEP_MAP = {'CMAKE_MODULE_PATH': ';'}
 
-EnvExpand = string.Template
+EnvExpand = Template
 
-class CustomExpand(string.Template):
-    pass
+class NamespaceFormatter(Formatter):
+    def __init__(self, namespace):
+        Formatter.__init__(self)
+        self.namespace = namespace
 
-# Add support for {attribute.lookups}
-CustomExpand.pattern = re.compile(r"""
-    (?<![$])(?:                          # delimiter (anything other than $)
-      (?P<escaped>a^)                |   # Escape sequence (not used)
-      (?P<named>a^)                  |   # a Python identifier (not used)
-      {(?P<braced>%(braced)s             # a braced identifier (with periods), AND...
-        (?:%(func)s)?)}              |   # an optional simple function, OR...
-      (?P<invalid>a^)                    # Other ill-formed delimiter exprs (not used)
-    )
-    """ % {'braced': ATTR_REGEX_STR,
-           'func': FUNC_REGEX_STR}, re.IGNORECASE | re.VERBOSE)
-
-# # Add support for !{attribute.lookups}
-# CustomExpand.pattern = re.compile(r"""
-#       %(delim)s(?:                     # delimiter AND...
-#       (?P<escaped>%(delim)s)       |   # Escape sequence of repeated delimiter, OR...
-#       (?P<named>[_a-z][_a-z0-9]*)  |   # a Python identifier, OR...
-#       {(?P<braced>%(braced)s)}     |  # a braced identifier (with periods), OR...
-#       (?P<invalid>)                    # Other ill-formed delimiter exprs
-#     )
-#     """ % {'delim': re.escape(CustomExpand.delimiter),
-#            'braced': ATTR_REGEX_STR},
-#     re.IGNORECASE | re.VERBOSE)
-
-class ObjectNameDict(UserDict.UserDict):
-    """
-    Dictionary for doing attribute-based lookups of objects.
-    """
-    ATTR_REG = re.compile(ATTR_REGEX_STR + '$', re.IGNORECASE)
-    FUNC_REG = re.compile("(" + FUNC_REGEX_STR + ')$', re.IGNORECASE)
-
-    def __getitem__(self, key):
-        parts = key.split('.')
-        funcparts = self.FUNC_REG.split(parts[-1])
-        if len(funcparts) > 1:
-            parts[-1] = funcparts[0]
-            funcarg = funcparts[1]
-        else:
-            funcarg = None
-        attrs = []
-        # work our way back through the hierarchy of attributes looking for an
-        # object stored directly in the dict with that key.
-        found = False
-        while parts:
+    def get_value(self, key, args, kwds):
+        """
+        'get_value' is used to retrieve a given field value.  The 'key' argument
+        will be either an integer or a string.  If it is an integer, it represents
+        the index of the positional argument in 'args'; If it is a string, then
+        it represents a named argument in 'kwargs'.
+        """
+        if isinstance(key, str):
             try:
-                result = self.data['.'.join(parts)]
-                found = True
-                break
+                # Check explicitly passed arguments first
+                return kwds[key]
             except KeyError:
-                # pop off each failed attribute and store it for attribute lookup
-                attrs.append(parts.pop())
-        if not found:
-            raise KeyError(key)
+                return self.namespace[key]
+        else:
+            return Formatter.get_value(key, args, kwds)
 
-        attrs.reverse()
-        # work our way forward through the attribute hierarchy looking up
-        # attributes on the found object
-        for attr in attrs:
-            try:
-                result = getattr(result, attr)
-            except AttributeError:
-                raise AttributeError("Failed to retrieve attribute '%s' of '%s' from %r" \
-                                     % (attr, '.'.join(attrs), result))
-        # call the result, if requested
-        if funcarg:
-            # strip ()
-            funcarg = funcarg[1:-1]
-            if not hasattr(result, '__call__'):
-                raise TypeError('%r is not callable' % (result))
-            if funcarg:
-                result = result(funcarg)
-            else:
-                result = result()
-        return result
-
-    def __setitem__(self, key, value):
-        if not isinstance(key, basestring):
-            raise TypeError("key must be a string")
-        if not self.ATTR_REG.match(key):
-            raise ValueError("key must be of the format 'node.attr1.attr2': %r" % key)
-        self.data[key] = value
 
 #===============================================================================
 # Commands
@@ -117,6 +53,9 @@ class BaseCommand(object):
     def __repr__(self):
         return "%s(%s)" % (self.__class__.__name__,
                            ', '.join(repr(x) for x in self.args))
+
+    def __eq__(self, other):
+        return (self.name == other.name) and (self.args == other.args)
 
     @classmethod
     def register_command_type(cls, name, klass):
@@ -789,7 +728,8 @@ class EnvironRecorderDict(UserDict.DictMixin):
     `__getitem__` is always guaranteed to return an `EnvironmentVariable`
     instance: it will not raise a KeyError.
     """
-    def __init__(self, command_recorder=None, environ=None, override_existing_lists=False):
+    def __init__(self, command_recorder=None, environ=None,
+                 override_existing_lists=False, expand_func=None):
         """
         override_existing_lists : bool
             If True, the first call to append or prepend will override the
@@ -804,6 +744,7 @@ class EnvironRecorderDict(UserDict.DictMixin):
         self.python_interpreter = Python(environ=self.environ)
         self._override_existing_lists = override_existing_lists
         self._var_cache = {}
+        self.expand_func = expand_func
 
     def set_command_recorder(self, recorder):
         self.command_recorder = recorder
@@ -812,7 +753,10 @@ class EnvironRecorderDict(UserDict.DictMixin):
         return self.command_recorder
 
     def do_list_override(self, key):
-        if key not in self.environ and key not in self:
+        """
+        whether or not to convert a prepend/append into a set
+        """
+        if key not in self.environ:
             return True
         if self._override_existing_lists and key not in self._var_cache:
             return True
@@ -849,6 +793,10 @@ class EnvironmentVariable(object):
         return self._environ_map.environ
 
     def prepend(self, value):
+        if self._environ_map.expand_func:
+            value = self._environ_map.expand_func(value)
+
+        print>>sys.stderr, "prepend", self.name, value, self.name not in self.environ, self.name not in self._environ_map
         if self. _environ_map.do_list_override(self.name):
             self._environ_map.python_interpreter.setenv(self.name, value)
             self._environ_map.command_recorder.setenv(self.name, value)
@@ -857,6 +805,9 @@ class EnvironmentVariable(object):
             self._environ_map.command_recorder.prependenv(self.name, value)
 
     def append(self, value):
+        if self._environ_map.expand_func:
+            value = self._environ_map.expand_func(value)
+
         if self. _environ_map.do_list_override(self.name):
             self._environ_map.python_interpreter.setenv(self.name, value)
             self._environ_map.command_recorder.setenv(self.name, value)
@@ -865,9 +816,16 @@ class EnvironmentVariable(object):
             self._environ_map.command_recorder.appendenv(self.name, value)
 
     def reset(self, value, friends=None):
+        if self._environ_map.expand_func:
+            value = self._environ_map.expand_func(value)
+
         self._environ_map.command_recorder.resetenv(self.name, value, friends=friends)
 
     def set(self, value):
+        if self._environ_map.expand_func:
+            value = self._environ_map.expand_func(value)
+
+        print>>sys.stderr, "set", self.name, value
         self._environ_map.command_recorder.setenv(self.name, value)
 
     def unset(self):
@@ -958,19 +916,24 @@ class RexNamespace(dict):
             If False, pre-existing values will be appended/prepended to as usual.
         """
         self.vars = vars if vars is not None else {}
+
+        self.formatter = NamespaceFormatter(self.vars)
+        self.vars['format'] = self.expand
+
         self.environ = EnvironRecorderDict(environ=environ,
-                                           override_existing_lists=env_overrides_existing_lists)
+                                           override_existing_lists=env_overrides_existing_lists,
+                                           expand_func=self.expand)
+
+        self.vars['env'] = util.AttrDictWrapper(self.environ)
+
         self.set_command_recorder(CommandRecorder())
-        self.custom = ObjectNameDict()
-        self.custom.data = self.vars  # assigning to data directly keeps a live link
 
     def expand(self, value):
-        value = CustomExpand(value).substitute(self.custom)
-        return value
+        return self.formatter.format(str(value))
 
     def set_command_recorder(self, recorder):
         self.command_recorder = recorder
-        self.command_recorder._expandfunc = self.expand
+        self.command_recorder._expandfunc = self.formatter.format
         self.environ.set_command_recorder(recorder)
         for cmd, func in self.command_recorder.get_command_methods():
             self.vars[cmd] = func
@@ -978,46 +941,6 @@ class RexNamespace(dict):
     def get_command_recorder(self):
         return self.command_recorder
 
-    def set(self, key, value, expand=True):
-        if self.ALL_CAPS.match(key):
-            self.environ[key] = value
-        else:
-            if expand and isinstance(value, basestring):
-                value = self.expand(value)
-            self.vars[key] = value
-
-    def __getitem__(self, key):
-        if self.ALL_CAPS.match(key):
-            return self.environ[key]
-        else:
-            return self.vars[key]
-
-    def __setitem__(self, key, value):
-        self.set(key, value)
-
-
-def _test_string_template():
-    print CustomExpand.pattern.search('foo {this.that}').group('braced')
-    # fail
-    print CustomExpand.pattern.search('foo ${this.that}')
-    print CustomExpand.pattern.search('{this.that}').group('braced')
-    print CustomExpand.pattern.search('{this.that(12)}').group('braced')
-    print CustomExpand.pattern.search('{this.that(x.x.x)}').group('braced')
-
-def _test_attr_dict():
-
-    class Foo(str):
-        bar = 'value'
-
-        def myfunc(self, arg):
-            return arg * 10
-
-    f = Foo('this is the string')
-    custom = ObjectNameDict({'thing.name': 'name',
-                             'thing': f})
-    print custom['thing']
-    print custom['thing.bar']
-    print custom['thing.myfunc(1)']
 
 def _test():
     print "-" * 40

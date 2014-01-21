@@ -48,8 +48,10 @@ import itertools
 from rez.settings import settings
 from rez import module_root_path
 import re
-from rez.packages import ResolvedPackage, split_name, package_in_range, package_family, iter_packages_in_range
-from rez.versions import ExactVersion, ExactVersionSet, Version, VersionRange, VersionError, to_range
+from rez.packages import BasePackage, ResolvedPackage, split_name, \
+    package_in_range, package_family, iter_packages_in_range
+from rez.versions import ExactVersion, ExactVersionSet, Version, VersionRange, \
+    VersionError, to_range
 from rez.public_enums import *
 from rez.exceptions import *
 from rez.memcached import *
@@ -63,7 +65,7 @@ DEFAULT_ENV_SEP_MAP = {'CMAKE_MODULE_PATH': "';'"}
 # Public Classes
 ##############################################################################
 
-class PackageRequest(object):
+class PackageRequest(BasePackage):
     """
     A request for a package.
 
@@ -79,16 +81,13 @@ class PackageRequest(object):
             means, "I don't need this package, but if it exists then it must fall within
             this version range." A weak request is actually converted to a normal anti-
             package: eg, "~foo-1.3" is equivalent to "!foo-0+<1.3|1.4+".
-    version_range : str
+    version_range : str, ExactVersion, ExactVersionSet, or VersionRange
             may be inexact (for eg '5.4+')
-    latest : bool or None
-            If None, resolving the package on disk is delayed until later. Otherwise,
-            the request will immediately attempt to resolve, and sorted based on
-            the value of 'latest': if True, the package with the latest version is
-            returned, otherwise, the earliest.
+    resolve_mode : {RESOLVE_MODE_LATEST, RESOLVE_MODE_EARLIEST, RESOLVE_MODE_NONE}
+            preference used when determining the order in which available versions
+            are tested during the resolve.
     """
-    def __init__(self, name, version_range, resolve_mode=None, timestamp=0):
-        self.name = name
+    def __init__(self, name, version_range, resolve_mode=RESOLVE_MODE_LATEST, timestamp=0):
         if isinstance(version_range, (ExactVersion, ExactVersionSet, VersionRange)):
             self.version_range = version_range
         else:
@@ -96,26 +95,26 @@ class PackageRequest(object):
                 self.version_range = VersionRange(version_range)
             except VersionError:
                 self.version_range = ExactVersionSet(version_range)
-        if self.is_weak():
+        if self.is_weak(name):
             # convert into an anti-package
             self.version_range = self.version_range.get_inverse()
-            self.name = anti_name(self.name)
-
-        self.timestamp = timestamp
-        self.resolve_mode = resolve_mode if resolve_mode is not None else RESOLVE_MODE_LATEST
-        self._version_str = str(self.version_range)
+            name = anti_name(name)
+        # Note: this class with have both a .version (inherited from BasePackage)
+        # and a .version_range (from this class) which are both the same object.
+        # The .version makes this class compatible with other BasePackage
+        # functions, but the .version_range is  provided for explicitness, since
+        # the version is allowed to be a range (i.e. inexact).
+        BasePackage.__init__(self, name, self.version_range, timestamp)
+        self.resolve_mode = resolve_mode
 
     def is_anti(self):
         return (self.name[0] == '!')
 
-    def is_weak(self):
-        return (self.name[0] == '~')
-
-    def short_name(self):
-        if (len(self._version_str) == 0):
-            return self.name
-        else:
-            return self.name + '-' + self._version_str
+    @staticmethod
+    def is_weak(name):
+        # this is static because any weak package request will automatically be
+        # converted to an anti package, so it makes no sense as an instancemethod
+        return (name[0] == '~')
 
     def __eq__(self, other):
         return self.name == other.name and \
@@ -125,9 +124,6 @@ class PackageRequest(object):
 
     def __str__(self):
         return self.short_name()
-
-    def __repr__(self):
-        return '%s(%r, %r)' % (self.__class__.__name__, self.name, self._version_str)
 
 class PackageConflict(object):
     """
@@ -156,25 +152,21 @@ class MissingPackage(object):
     def __nonzero__(self):
         return False
 
-class ResolvedPackages(object):
+class Packages(object):
     """
     Class intended for use with rex which provides attribute-based lookups for
-    `ResolvedPackage` instances.
+    `BasePackage` instances.
 
     If the package does not exist, the attribute value will be an empty string.
     This allows for attributes to be used to test the presence of a package and
     for non-existent packages to be used in string formatting without causing an
     error.
     """
-    def __init__(self, pkg_res_list):
-        for pkg_res in pkg_res_list:
-            setattr(self, pkg_res.name, pkg_res)
+    def __init__(self, pkg_list):
+        for pkg in pkg_list:
+            setattr(self, pkg.name, pkg)
 
     def __getattr__(self, attr):
-        """
-        return an empty string for non-existent packages to provide an
-        easy way to test package existence
-        """
         # For things like '__class__', for instance
         if attr.startswith('__') and attr.endswith('__'):
             try:
@@ -494,14 +486,65 @@ class Resolver(object):
         return result
 
     def get_execution_namespace(self, pkg_res_list):
-        env = rex.RexNamespace(env_overrides_existing_lists=True)
+        namespace = rex.RexNamespace(env_overrides_existing_lists=True)
 
         # add special data objects and functions to the namespace
         from rez.system import system
-        env['machine'] = system
-        env['pkgs'] = ResolvedPackages(pkg_res_list)
-        env['building'] = bool(os.getenv('REZ_BUILD_ENV'))
-        return env
+        namespace.vars['machine'] = system
+        namespace.vars['resolve'] = Packages(pkg_res_list)
+        namespace.vars['request'] = Packages(self.pkg_reqs)
+        namespace.vars['building'] = bool(os.getenv('REZ_BUILD_ENV'))
+        return namespace
+
+    @staticmethod
+    def exec_pkg_commands(namespace, pkg_res):
+        prefix = "REZ_" + pkg_res.name.upper()
+        namespace.environ[prefix + "_VERSION"] = pkg_res.version
+        namespace.environ[prefix + "_BASE"] = pkg_res.base
+        namespace.environ[prefix + "_ROOT"] = pkg_res.root
+
+        commands = pkg_res.metadata['commands']
+
+        namespace.vars['this'] = pkg_res
+        namespace.vars['root'] = pkg_res.root
+        namespace.vars['base'] = pkg_res.base
+        namespace.vars['version'] = pkg_res.version
+
+        # new style:
+        if isinstance(commands, basestring):
+            # compile to get tracebacks with line numbers and file
+            code = compile(commands, pkg_res.metafile, 'exec')
+            try:
+                exec code in namespace.vars
+            except Exception, err:
+                import traceback
+                raise PkgCommandError("%s (%s):\n %s" % (pkg_res.short_name(),
+                                                         pkg_res.metafile,
+                                                         traceback.format_exc(err)))
+        # python function from package.py:
+        elif inspect.isfunction(commands):
+            commands.func_globals.update(namespace.vars)
+            try:
+                commands()
+            except Exception, err:
+                import traceback
+                raise PkgCommandError("%s (%s):\n %s" % (pkg_res.short_name(),
+                                                         pkg_res.metafile,
+                                                         traceback.format_exc(err)))
+        # old style:
+        elif isinstance(commands, list):
+            if settings.warn_old_commands:
+                print_warning_once("%s is using old-style commands." \
+                                   % pkg_res.short_name())
+            for cmd in commands:
+                cmd = cmd.replace("!VERSION!", str(pkg_res.version))
+                cmd = cmd.replace("!MAJOR_VERSION!", str(pkg_res.version.major))
+                cmd = cmd.replace("!MINOR_VERSION!", str(pkg_res.version.minor))
+                cmd = cmd.replace("!BASE!", str(pkg_res.base))
+                cmd = cmd.replace("!ROOT!", str(pkg_res.root))
+                cmd = cmd.replace("!USER!", os.getenv("USER", "UNKNOWN_USER"))
+                # convert to new-style
+                parse_export_command(cmd, namespace)
 
     def record_commands(self, pkg_res_list):
         # build the environment commands
@@ -510,21 +553,21 @@ class Resolver(object):
         raw_req_str = ' '.join([x.short_name() for x in self.raw_pkg_reqs])
 
         # the environment dictionary to be passed during execution of python code.
-        env = self.get_execution_namespace(pkg_res_list)
+        namespace = self.get_execution_namespace(pkg_res_list)
 
-        env["REZ_USED"] = module_root_path
-        env["REZ_PREV_REQUEST"] = "$REZ_REQUEST"
-        env["REZ_REQUEST"] = full_req_str
-        env["REZ_RAW_REQUEST"] = raw_req_str
-        env["REZ_RESOLVE"] = " ".join(res_pkg_strs)
-        env["REZ_RESOLVE_MODE"] = self.rctxt.resolve_mode
-        env["REZ_FAILED_ATTEMPTS"] = len(self.rctxt.config_fail_list)
-        env["REZ_REQUEST_TIME"] = self.rctxt.time_epoch
+        namespace.environ["REZ_USED"] = module_root_path
+        namespace.environ["REZ_PREV_REQUEST"] = "$REZ_REQUEST"
+        namespace.environ["REZ_REQUEST"] = full_req_str
+        namespace.environ["REZ_RAW_REQUEST"] = raw_req_str
+        namespace.environ["REZ_RESOLVE"] = " ".join(res_pkg_strs)
+        namespace.environ["REZ_RESOLVE_MODE"] = self.rctxt.resolve_mode
+        namespace.environ["REZ_FAILED_ATTEMPTS"] = len(self.rctxt.config_fail_list)
+        namespace.environ["REZ_REQUEST_TIME"] = self.rctxt.time_epoch
         # TODO remove this and have Rez create a proper rez package for itself
-        env["PYTHONPATH"] = os.path.join(module_root_path, 'python')
+        namespace.environ["PYTHONPATH"] = os.path.join(module_root_path, 'python')
 
         # master recorder. this holds all of the commands to be interpreted
-        recorder = env.get_command_recorder()
+        recorder = namespace.get_command_recorder()
 
         recorder.comment("-" * 30)
         recorder.comment("START of package commands")
@@ -533,45 +576,13 @@ class Resolver(object):
         set_vars = {}
 
         for pkg_res in pkg_res_list:
-            # reset, so we can isolate recorded commands for this package
-            # master recorder. this holds all of the commands to be interpreted
+            # swap the command recorder so we can isolate commands for this package
             pkg_recorder = rex.CommandRecorder()
-            env.set_command_recorder(pkg_recorder)
+            namespace.set_command_recorder(pkg_recorder)
             pkg_recorder.comment("")
             pkg_recorder.comment("Commands from package %s" % pkg_res.short_name())
 
-            prefix = "REZ_" + pkg_res.name.upper()
-            env[prefix + "_VERSION"] = pkg_res.version
-            env[prefix + "_BASE"] = pkg_res.base
-            env[prefix + "_ROOT"] = pkg_res.root
-
-            # new style:
-            if isinstance(pkg_res.raw_commands, basestring):
-                env['this'] = pkg_res
-                env['root'] = pkg_res.root
-                env['base'] = pkg_res.base
-                # FIXME: must disable expand because it will convert from VersionString to str
-                env.set('version', pkg_res.version, expand=False)
-
-                # compile to get tracebacks with line numbers and file
-                code = compile(pkg_res.raw_commands, pkg_res.metafile, 'exec')
-                try:
-                    exec code in env
-                except Exception, err:
-                    import traceback
-                    raise PkgCommandError("%s:\n %s" % (pkg_res.short_name(),
-                                                        traceback.format_exc(err)))
-            elif inspect.isfunction(pkg_res.raw_commands):
-                pkg_res.raw_commands(pkg_res, env['pkgs'],
-                                     AttrDictWrapper(env), pkg_recorder)
-            # old style:
-            elif isinstance(pkg_res.raw_commands, list):
-                if settings.warn_old_commands:
-                    print_warning_once("%s is using old-style commands." \
-                                       % pkg_res.short_name())
-                for cmd in pkg_res.raw_commands:
-                    # convert to new-style
-                    parse_export_command(cmd, env)
+            self.exec_pkg_commands(namespace, pkg_res)
 
             pkg_res.commands = pkg_recorder.get_commands()
 
@@ -908,36 +919,6 @@ class _Package(object):
                  optimisation: just do this right at the end of resolve_packages
         """
         self.root_path = root_path
-
-    # Get commands with string-replacement
-    def get_resolved_commands(self):
-        """
-        NOTE: this is deprecated with the addition of the python rex execution language
-
-        Get commands with string replacement
-        """
-        if self.is_resolved():
-            if isinstance(self.metadata['commands'], list):
-                version = str(self.version_range)
-                vernums = version.split('.') + ['', '']
-                major_version = vernums[0]
-                minor_version = vernums[1]
-                user = os.getenv("USER", "UNKNOWN_USER")
-
-                new_cmds = []
-                for cmd in self.metadata['commands']:
-                    cmd = cmd.replace("!VERSION!", version)
-                    cmd = cmd.replace("!MAJOR_VERSION!", major_version)
-                    cmd = cmd.replace("!MINOR_VERSION!", minor_version)
-                    cmd = cmd.replace("!BASE!", self.base_path)
-                    cmd = cmd.replace("!ROOT!", self.root_path)
-                    cmd = cmd.replace("!USER!", user)
-                    new_cmds.append(cmd)
-                return new_cmds
-            else:
-                return self.metadata['commands']
-        else:
-            return None
 
     def get_package(self, latest=True, exact=False, timestamp=0):
         return package_in_range(self.name, self.version_range,
@@ -1560,9 +1541,10 @@ class _Configuration(object):
         for name in ordered_fams:
             pkg = self.pkgs[name]
             if not pkg.is_anti():
-                resolved_cmds = pkg.get_resolved_commands()
-                pkg_res = ResolvedPackage(name, str(pkg.version_range), pkg.base_path,
-                                          pkg.root_path, resolved_cmds, pkg.metadata, pkg.timestamp, pkg.metafile)
+                pkg_res = ResolvedPackage(name, str(pkg.version_range),
+                                          pkg.metafile, pkg.timestamp,
+                                          pkg.metadata, pkg.base_path,
+                                          pkg.root_path)
                 pkg_ress.append(pkg_res)
 
         return pkg_ress
@@ -2154,7 +2136,7 @@ class _Configuration(object):
 ##############################################################################
 # Internal Functions
 ##############################################################################
-def parse_export_command(cmd, env_obj):
+def parse_export_command(cmd, namespace):
     """
     parse a bash command and convert it to a EnvironmentVariable action
     """
@@ -2168,7 +2150,7 @@ def parse_export_command(cmd, env_obj):
     if cmd.startswith('export '):
         var, value = cmd.split(' ', 1)[1].split('=', 1)
         # get an EnvironmentVariable instance
-        var_obj = env_obj.environ[var]
+        var_obj = namespace.environ[var]
         parts = value.split(DEFAULT_ENV_SEP_MAP.get(var, os.pathsep))
         if len(parts) > 1:
             orig_parts = parts
@@ -2205,13 +2187,17 @@ def parse_export_command(cmd, env_obj):
         else:
             var_obj.set(value)
     elif cmd.startswith('#'):
-        env_obj.command_recorder.comment(cmd[1:].lstrip())
+        namespace.command_recorder.comment(cmd[1:].lstrip())
     elif cmd.startswith('alias '):
         match = re.search("alias (?P<key>.*)=(?P<value>.*)", cmd)
-        env_obj.command_recorder.alias(match.groupdict()['key'], match.groupdict()['value'])
+        key = match.groupdict()['key'].strip()
+        value = match.groupdict()['value'].strip()
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+            value = value[1:-1]
+        namespace.command_recorder.alias(key, value)
     else:
         # assume we can execute this as a straight command
-        env_obj.command_recorder.command(cmd)
+        namespace.command_recorder.command(cmd)
 
 
 
