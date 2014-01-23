@@ -646,12 +646,12 @@ class ExternalPackageConfig_0(BasePackageConfig_0):
         'variants': [['name-1.2']],
         'commands': OneOf('str',
                           ['str'],
-                          lambda pkg, pkgs, env, recorder: None)
+                          lambda: None)
     }
     REQUIRED = ('config_version', 'name')
     PROTECTED = ('requires', 'build_requires', 'variants', 'commands', 'versions')
 
-class ExternalPackageConfigList_0(Metadata):
+class ExternalPackageConfigList_0(MetadataValidator):
     REFERENCE = [
         ExternalPackageConfig_0.REFERENCE,
         {
@@ -660,8 +660,8 @@ class ExternalPackageConfigList_0(Metadata):
             'build_requires': ['name-1.2'],
             'variants': [['name-1.2']],
             'commands': OneOf('str',
-                ['str'],
-                lambda pkg, pkgs, env, recorder: None)
+                        ['str'],
+                        lambda: None)
         }]
 
     REQUIRED = ('[0].config_version', '[0].name', '[0].versions', '[1:].version')
