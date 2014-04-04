@@ -88,7 +88,11 @@ class TestVersionRange(VersionBaseTest):
             self.assertTrue(cls('2') in VersionRange('1|2'))
 
             self.assertFalse(cls('1') in VersionRange('1.0'))
+            self.assertTrue(cls('1.0') in VersionRange('1.0'))
+            self.assertTrue(cls('1.0.0') in VersionRange('1.0'))
+
             self.assertTrue(cls('1.2') in VersionRange('1.0+'))
+            self.assertTrue(cls('2.0') in VersionRange('1.0+'))
 
             self.assertTrue(cls('1') in VersionRange(''))
             self.assertTrue(cls('') in VersionRange(''))
