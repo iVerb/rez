@@ -8,6 +8,15 @@ import pkgutil
 import rez.cli
 import textwrap
 
+COMMON_PARSER_ARGS = [
+    ('--logfile',
+        {'help': 'log all stdout/stderr output to the given file, in'
+         ' addition to printing to the screen'}),
+    ('--logfile-overwrite',
+        {'action': 'store_true', 'help':'log all stdout/stderr output to'
+         ' the given file, in addition to printing to the screen'}),
+]
+
 def get_parser_defaults(parser):
     return dict((act.dest, act.default) for act in parser._actions)
 
@@ -19,21 +28,12 @@ def subpackages(packagemod):
     modpkgs = []
     modpkgs_names = set()
     if hasattr(packagemod, '__path__'):
-        yield packagemod.__name__, packagemod, True
+        yield packagemod.__name__, True
         for importer, modname, ispkg in pkgutil.walk_packages(packagemod.__path__,
                                                               packagemod.__name__+'.'):
-            if modname not in sys.modules:
-                try:
-                    #mod = importer.find_module(modname).load_module(modname)
-                    __import__(modname, globals(), locals(), [], -1)
-                    mod = sys.modules[modname]
-                except Exception, e:
-                    rez.cli.error("importing %s: %s" %  ( modname, e))
-            else:
-                mod = sys.modules[modname]
-            yield modname, mod, ispkg
+            yield modname, ispkg
     else:
-        yield packagemod.__name__, packagemod, False
+        yield packagemod.__name__, False
 
 class DescriptionHelpFormatter(argparse.HelpFormatter):
     """Help message formatter which retains double-newlines in descriptions
@@ -56,6 +56,113 @@ class DescriptionHelpFormatter(argparse.HelpFormatter):
                     help += ' (default: %(default)s)'
         return help
 
+class SetupRezSubParser(object):
+    """
+    Callback class for lazily setting up rez sub-parsers.
+    """
+    def __init__(self, module_name):
+        self.module_name = module_name
+
+    def __call__(self, parser_name, parser):
+        mod = self.get_module()
+
+        if not mod.__doc__:
+            rez.cli.error("command module %s must have a module-level "
+                          "docstring (used as the command help)" % self.module_name)
+        if not hasattr(mod, 'command'):
+            rez.cli.error("command module %s must provide a command() "
+                          "function" % self.module_name)
+        if not hasattr(mod, 'setup_parser'):
+            rez.cli.error("command module %s  must provide a setup_parser() "
+                          "function" % self.module_name)
+
+        mod.setup_parser(parser)
+        parser.description = mod.__doc__
+        parser.set_defaults(func=mod.command)
+        # add the common args to the subparser
+        for arg, arg_settings in COMMON_PARSER_ARGS:
+            parser.add_argument(arg, **arg_settings)
+
+        # optionally, return the brief help line for this sub-parser
+        brief = mod.__doc__.strip('\n').split('\n')[0]
+        return brief
+
+    def get_module(self):
+        if self.module_name not in sys.modules:
+            try:
+                #mod = importer.find_module(modname).load_module(modname)
+                __import__(self.module_name, globals(), locals(), [], -1)
+            except Exception, e:
+                rez.cli.error("importing %s: %s" % (self.module_name, e))
+                return None
+        return sys.modules[self.module_name]
+
+class LazySubParsersAction(argparse._SubParsersAction):
+    """
+    argparse Action which calls the `setup_subparser` action provided to
+    `LazyArgumentParser`.
+    """
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser_name = values[0]
+
+        # select the parser
+        try:
+            parser = self._name_parser_map[parser_name]
+        except KeyError:
+            tup = parser_name, ', '.join(self._name_parser_map)
+            msg = _('unknown parser %r (choices: %s)' % tup)
+            raise ArgumentError(self, msg)
+
+        self._setup_subparser(parser_name, parser)
+
+        caller = super(LazySubParsersAction, self).__call__
+        return caller(parser, namespace, values, option_string)
+
+    def _setup_subparser(self, parser_name, parser):
+        if hasattr(parser, 'setup_subparser'):
+            help = parser.setup_subparser(parser_name, parser)
+            if help is not None:
+                help_action = self._find_choice_action(parser_name)
+                if help_action is not None:
+                    help_action.help = help
+
+    def _find_choice_action(self, parser_name):
+        for help_action in self._choices_actions:
+            if help_action.dest == parser_name:
+                return help_action
+
+class LazyArgumentParser(argparse.ArgumentParser):
+    """
+    ArgumentParser sub-class which accepts an additional `setup_subparser`
+    argument for lazy setup of sub-parsers.
+
+    `setup_subparser` should be passed a function with the signature:
+        setup_subparser(parser_name, subparser)
+    
+    The function will be called to setup the sub-parser before it parses any
+    input, thus it can be used to add additional arguments and fill out the
+    sub-parser's 'description' attribute, which is used when help is requested for
+    the sub-parser.
+
+    The function can optionally return a help string, which will be used as the brief
+    description when help is requested for the sub-parser's parent parser.
+    """
+    def __init__(self, *args, **kwargs):
+        self.setup_subparser = kwargs.pop('setup_subparser', None)
+        super(LazyArgumentParser, self).__init__(*args, **kwargs)
+        self.register('action', 'parsers', LazySubParsersAction)
+        # self.register('action', 'help', LazyHelpAction)
+
+    def format_help(self):
+        """
+        sets up all sub-parsers when help is requested
+        """
+        if self._subparsers:
+            for action in self._subparsers._actions:
+                if isinstance(action, LazySubParsersAction):
+                    for parser_name, parser in action._name_parser_map.iteritems():
+                        action._setup_subparser(parser_name, parser)
+        return super(LazyArgumentParser, self).format_help()
 
 def spawn_logged_subprocess(logfile, overwrite, args):
     import subprocess
@@ -120,7 +227,7 @@ def spawn_logged_subprocess(logfile, overwrite, args):
 
 @rez.cli.redirect_to_stderr
 def main():
-    parser = argparse.ArgumentParser("rez")
+    parser = LazyArgumentParser("rez")
     
     # add args common to all subcommands... we add them both to the top parser,
     # AND to the subparsers, for two reasons:
@@ -128,51 +235,33 @@ def main():
     #     "rez build --logfile=foo"
     #  2) this allows the flags to be used when using either "rez" or
     #     "rez-build" - ie, this will work: "rez-build --logfile=foo"
-    
-    common_args = [
-        ('--logfile',
-            {'help': 'log all stdout/stderr output to the given file, in'
-             ' addition to printing to the screen'}),
-        ('--logfile-overwrite',
-            {'action': 'store_true', 'help':'log all stdout/stderr output to'
-             ' the given file, in addition to printing to the screen'}),
-    ]
-    for arg, arg_settings in common_args:
+
+    for arg, arg_settings in COMMON_PARSER_ARGS:
         parser.add_argument(arg, **arg_settings)
 
     subparsers = []
     parents = []
-    for name, mod, ispkg in subpackages(rez.cli):
+    for name, ispkg in subpackages(rez.cli):
         cmdname = name.split('.')[-1].replace('_', '-')
         if ispkg:
             if cmdname == 'cli':
                 title = 'commands'
             else:
                 title = (cmdname + ' subcommands')
-            subparsers.append(parser.add_subparsers(title=title))
+            subparser = parser.add_subparsers(dest='cmd',
+                                              metavar='COMMAND')
+            subparsers.append(subparser)
             parents.append(name)
             continue
         elif not name.startswith(parents[-1]):
             parents.pop()
             subparsers.pop()
-        if not mod.__doc__:
-            rez.cli.error("command module %s must have a module-level docstring (used as the command help)" % name)
-        if not hasattr(mod, 'command'):
-            rez.cli.error("command module %s must provide a command() function" % name)
-        if not hasattr(mod, 'setup_parser'):
-            rez.cli.error("command module %s  must provide a setup_parser() function" % name)
 
-        brief = mod.__doc__.strip('\n').split('\n')[0]
-        subparser = subparsers[-1].add_parser(cmdname,
-                                              description=mod.__doc__,
-                                              formatter_class=DescriptionHelpFormatter,
-                                              help=brief)
-        mod.setup_parser(subparser)
-        subparser.set_defaults(func=mod.command)
-        
-        # add the common args to the subparser
-        for arg, arg_settings in common_args:
-            subparser.add_argument(arg, **arg_settings)
+        subparsers[-1].add_parser(cmdname,
+                                  help='',  # required so that it can be setup later
+                                  formatter_class=DescriptionHelpFormatter,
+                                  setup_subparser=SetupRezSubParser(name)
+                                              )
 
     args = parser.parse_args()
     
