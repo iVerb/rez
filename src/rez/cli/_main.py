@@ -5,7 +5,7 @@ import os
 import sys
 import pkgutil
 import textwrap
-import argparse
+import rez.contrib.argparse as argparse
 from rez.cli._util import error
 from rez import __version__
 import rez.sigint

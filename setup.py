@@ -98,7 +98,7 @@ setup(
     license="LGPL",
     #cmdclass={'install': install_},
     scripts=[os.path.join('bin',x) for x in scripts],
-    install_requires=requires,
+    #install_requires=requires,
     include_package_data=True,
     package_dir = {'': 'src'},
     packages=find_packages('src', exclude=["tests"]),

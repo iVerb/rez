@@ -1,4 +1,4 @@
-import argparse
+import rez.contrib.argparse as argparse
 __doc__ = argparse.SUPPRESS
 
 # See util.create_forwarding_script().
