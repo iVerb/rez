@@ -20,7 +20,7 @@ the addition of new resources is localized to the registration functions
 provided by this module.
 """
 from __future__ import with_statement
-import yaml
+import rez.contrib.yaml as yaml
 import os
 import sys
 import inspect

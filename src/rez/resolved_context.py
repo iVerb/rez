@@ -10,7 +10,7 @@ from rez.shells import create_shell, get_shell_types
 import pickle
 import getpass
 import inspect
-import yaml
+import rez.contrib.yaml as yaml
 import time
 import uuid
 import sys

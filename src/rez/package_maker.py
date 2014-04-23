@@ -1,5 +1,5 @@
 import os
-import yaml
+import rez.contrib.yaml as yaml
 from rez.util import OrderedDict
 from contextlib import contextmanager
 

@@ -13,7 +13,7 @@ import posixpath
 import ntpath
 import UserDict
 import re
-import yaml
+import rez.contrib.yaml as yaml
 import shutil
 import textwrap
 import tempfile

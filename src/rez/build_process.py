@@ -7,7 +7,7 @@ from rez.util import encode_filesystem_name
 from rez.release_hook import create_release_hooks
 from rez.versions import ExactVersion
 import getpass
-import yaml
+import rez.contrib.yaml as yaml
 import shutil
 import os
 import os.path

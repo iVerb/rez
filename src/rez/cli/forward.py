@@ -11,7 +11,7 @@ def setup_parser(parser):
     parser.add_argument("ARG", type=str, nargs=argparse.REMAINDER)
 
 def command(opts):
-    import yaml
+    import rez.contrib.yaml as yaml
     import inspect
 
     args = sys.argv

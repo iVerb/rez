@@ -7,7 +7,7 @@ print settings.packages_path
 from __future__ import with_statement
 import os
 import os.path
-import yaml
+import rez.contrib.yaml as yaml
 import sys
 import string
 import getpass

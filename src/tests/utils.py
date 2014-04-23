@@ -2,7 +2,7 @@ import inspect
 import os.path
 import sys
 import shutil
-import yaml
+import rez.contrib.yaml as yaml
 import unittest
 
 _test_dir = os.path.dirname(inspect.getfile(inspect.currentframe()))
