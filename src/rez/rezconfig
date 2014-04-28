@@ -1,0 +1,275 @@
+#
+# Rez configuration settings. Do not change this file.
+#
+# Settings are determined in the following way:
+# 1) The setting is first read from this file;
+# 2) The setting is then overridden if it is present in another settings file
+#    pointed at by the $REZ_SETTINGS_FILE environment variable;
+# 3) The setting is further overriden if it is present in $HOME/.rezconfig;
+# 4) The setting is overridden again if the environment variable $REZ_XXX is
+#    present, where XXX is the uppercase version of the setting key. For example,
+#    'image_viewer' will be overriden by $REZ_IMAGE_VIEWER.
+# 5) This is a special case applied only during a package build or release. In
+#    this case, if the package definition file contains a 'rezconfig' section,
+#    settings in this section will override all others.
+#
+# If a setting type is a list, then an overriding env-var is expected to be
+# separated by the path seperator for the current os (eg ':' in Linux), unless
+# overridden in the '_sep' section.
+#
+# There are a set of special variables that will expand at runtime. These can be
+# referred to by any string-based setting, using the format '{varname}'. The
+# available variables are:
+# {platform} - machine platform, eg 'linux';
+# {arch} - machine architecture, eg 'x86_64';
+# {os} - machine operating system, eg 'Ubuntu-12.04';
+# {user} - the current user.
+#
+
+
+###############################################################################
+# Paths
+###############################################################################
+
+# The package search path. Rez uses this to find packages. Note that Rez's special
+# 'bootstrap' package path (located inside the module, and containing packages
+# such as 'platform') is always searched last, even if it does not appear in this
+# list.
+packages_path:
+- '~/packages'           # locally installed pkgs, not yet deployed
+- '~/.rez/packages/int'  # internally developed pkgs, deployed
+- '~/.rez/packages/ext'  # external (3rd party) pkgs, such as houdini, boost
+
+# The path that Rez will locally install packages to when rez-build is used
+local_packages_path: '~/packages'
+
+# The path that Rez will deploy packages to when rez-release is used. For
+# production use, you will probably want to change this to a site-wide location.
+release_packages_path: '~/.rez/packages/int'
+
+# The path that rez-install will deploy external packages to. For production use,
+# you will probably want to change this to a site-wide location.
+external_packages_path: '~/.rez/packages/ext'
+
+# The path that rez-egg-install will deploy packages to. For production use, you
+# will probably want to change this to a site-wide location.
+egg_packages_path: '~/.rez/packages/ext'
+
+# The formulae URLs that rez-install searches for packages
+package_repository_url_path:
+- 'https://github.com/LumaPictures/rez-build/archive/master.zip'
+
+# The directory where rez stores package repositories
+package_repository_path: '~/.rez/package-repos'
+
+# The directory where rez caches package repository downloads
+package_repository_cache_path: '~/.rez/downloads/package-repos'
+
+# Where temporary files go
+tmpdir: '/tmp'
+
+
+###############################################################################
+# Plugins
+###############################################################################
+
+# Search path for shell plugins
+shell_plugin_path: []
+
+# Search path for source retrieval plugins
+source_retriever_plugin_path: []
+
+# Search path for release-VCS plugins
+release_vcs_plugin_path: []
+
+# Search path for release-hook plugins
+release_hook_plugin_path: []
+
+# Search path for build-system plugins
+build_system_plugin_path: []
+
+
+###############################################################################
+# Environment Resolution
+###############################################################################
+
+# System packages that are implicitly added to all package resolves, unless
+# the --no-implicit flag is used.
+implicit_packages:
+- 'platform-{platform}'
+- 'arch-{arch}'
+# TODO put this back once version submodule is updated
+#- '~platform-{platform}'
+#- '~arch-{arch}'
+#- '~os-{os}'
+
+# Rez's default behaviour is to overwrite variables on first reference. This
+# prevents unconfigured software from being used within the resolved environment.
+# For example, if PYTHONPATH were to be appended to and not overwritten, then
+# python modules from the parent environment would be (incorrectly) accessible
+# within the Rez environment.
+# 'Parent variables' override this behaviour - they are appended/prepended to,
+# rather than being overwritten. If you set 'all_parent_variables' to true, then
+# all variables are considered parent variables, and the value of 'parent_variables'
+# is ignored. Be aware that if you make variables such as PATH, PYTHONPATH or
+# app plugin paths parent variables, you are exposing yourself to potentially
+# incorrect behaviour within a resolved environment.
+parent_variables: []
+all_parent_variables: false
+
+# When two or more packages in a resolve attempt to set the same environment
+# variable, Rez's default behaviour is to flag this as a conflict and abort the
+# resolve. You can overcome this in a package's commands section by using the
+# Rex command 'resetenv' instead of 'setenv'. However, you can also turn off this
+# behaviour globally - for certain variables, by adding them to 'resetting_variables',
+# and for all variables, by setting 'all_resetting_variables' to true.
+resetting_variables: []
+all_resetting_variables: false
+
+
+###############################################################################
+# Debugging
+###############################################################################
+
+# If true, print warnings associated with shell startup sequence, when using
+# tools such as rez-env. For example, if the target shell type is 'sh', and
+# the 'rcfile' param is used, you would get a warning, because the sh shell
+# does not support rcfile.
+warn_shell_startup: true
+
+# If true, print a warning when an untimestamped package is found.
+warn_untimestamped: true
+
+# If true, print a warning whenever a package with an old-style commands
+# section is resolved into an environment
+warn_old_commands: true
+
+# Print debugging info when loading plugins
+debug_plugins: false
+
+# Print debugging info such as VCS commands during package release
+debug_package_release: false
+
+
+###############################################################################
+# Build
+###############################################################################
+
+# The default working directory for a package build, relative to the package root
+# directory (this is typically where temporary build files are written).
+build_directory: build
+
+# The name of the CMake build system to use, valid options are eclipse, make,
+# xcode and codeblocks.
+cmake_build_system: make
+
+# A list of default arguments to be used with CMake.
+cmake_args:
+- '-DCMAKE_SKIP_RPATH=1'
+
+
+###############################################################################
+# Release
+###############################################################################
+
+# For format string used to determine the VCS tag name when releasing.  This
+# string will be formatted against the metadata for the package currently being
+# released.  Valid formatting keys are "name", "version".
+vcs_tag_name: '{name}-{version}'
+
+# The release hooks to run when a release occurs. Release hooks are plugins - if
+# a plugin listed here is not present, a warning message is printed. Note that a
+# release hook plugin being loaded does not mean it will run, it does need to be
+# listed here as well.
+release_hooks:
+- emailer
+
+# Email SMTP host (mandatory).
+release_email_smtp_host: ''
+
+# Email SMTP port.
+release_email_smtp_port: 25
+
+# The address that post-release emails appear to come from.
+release_email_from: '{user}@rez-release.com'
+
+# List of recipients of post-release emails.
+release_email_to: []
+
+
+###############################################################################
+# Appearance
+###############################################################################
+
+# The editor used to get user input in some cases.
+# On osx, set this to "open -a <your-app>" if you want to use a specific app.
+editor:
+
+# The program used to view images by tools such as 'rez-context -g'
+# On osx, set this to "open -a <your-app>" if you want to use a specific app.
+image_viewer:
+
+# The browser used to view documentation; the rez-help tool uses this
+# On osx, set this to "open -a <your-app>" if you want to use a specific app.
+browser:
+
+# The default image format that dot-graphs are rendered to.
+dot_image_format: png
+
+# String to add to shell prompt when using rez-env. Set prompt to the empty
+# string if you do not want Rez changing the prompt.
+prompt: '>'
+
+# If true, prefixes the prompt, suffixes if false
+prefix_prompt: true
+
+
+###############################################################################
+# Internal - Do Not Change
+###############################################################################
+
+# Type specifiers
+_type:
+    packages_path: list
+    local_packages_path: str
+    release_packages_path: str
+    external_packages_path: str
+    egg_packages_path: str
+    package_repository_url_path: list
+    package_repository_path: str
+    package_repository_cache_path: str
+    tmpdir: str
+    implicit_packages: list
+    shell_plugin_path: list
+    source_retriever_plugin_path: list
+    release_vcs_plugin_path: list
+    release_hook_plugin_path: list
+    build_system_plugin_path: list
+    editor: str
+    image_viewer: str
+    browser: str
+    prompt: str
+    prefix_prompt: bool
+    warn_shell_startup: bool
+    warn_untimestamped: bool
+    warn_old_commands: bool
+    debug_plugins: bool
+    debug_package_release: bool
+    build_system: str
+    cmake_args: list
+    vcs_tag_name: str
+    release_hooks: list
+    release_email_smtp_host: str
+    release_email_smtp_port: int
+    release_email_from: str
+    release_email_to: list
+    parent_variables: list
+    all_parent_variables: bool
+    resetting_variables: list
+    all_resetting_variables: bool
+
+
+# What seperator to expect in env-vars
+_sep:
+    implicit_packages: ' '
+    release_email_to: ' '
