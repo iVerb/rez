@@ -31,7 +31,9 @@ ALL_PACKAGES = set([
     'variants_py-2.0',
     'single_unversioned',
     'single_versioned-3.5',
-    'multi-1.0', 'multi-1.1', 'multi-1.2', 'multi-2.0'])
+    'multi-1.0', 'multi-1.1', 'multi-1.2', 'multi-2.0',
+    'function_properties-1', 'function_properties-2',
+])
 
 
 ALL_FAMILIES = set(x.split('-')[0] for x in ALL_PACKAGES)
@@ -255,6 +257,29 @@ class TestPackages(TestBase, TempdirMixin):
             data_ = _data(installed_package)
             self.assertDictEqual(data, data_)
 
+    def test_8(self):
+        """test use of functions for package properties."""
+        package = get_package("function_properties", "2")
+        expected_uri = os.path.join(self.py_packages_path,
+                                    "function_properties.py<2>")
+        self.assertEqual(package.uri, expected_uri)
+        self.assertEqual(package.version, Version("2"))
+        self.assertEqual(package.tools, ['foo', 'bar'])
+        self.assertEqual(package.description,
+                         'Package used for testing usage of functions for '
+                         'package properties')
+        self.assertEqual(package.help, 'Help me!')
+
+        package = get_package("function_properties", "1")
+        expected_uri = os.path.join(self.py_packages_path,
+                                    "function_properties.py<1>")
+        self.assertEqual(package.uri, expected_uri)
+        self.assertEqual(package.version, Version("1"))
+        self.assertEqual(package.tools, ['foo', 'bar'])
+        self.assertEqual(package.description,
+                         'Package used for testing usage of functions for '
+                         'package properties')
+        self.assertEqual(package.help, 'Help me!')
 
 def get_test_suites():
     suites = []
@@ -266,6 +291,7 @@ def get_test_suites():
     suite.addTest(TestPackages("test_5"))
     suite.addTest(TestPackages("test_6"))
     suite.addTest(TestPackages("test_7"))
+    suite.addTest(TestPackages("test_8"))
     suites.append(suite)
     return suites
 

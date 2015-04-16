@@ -2,6 +2,7 @@
 Utilities related to managing data types.
 """
 from rez.vendor.schema.schema import Schema, Optional
+from rez.utils.formatting import indent
 from collections import MutableMapping
 from inspect import getsourcelines
 from threading import Lock
@@ -37,6 +38,16 @@ class SourceCode(object):
         value = SourceCode.__new__(SourceCode)
         value.source = code
         return value
+
+    def to_function_text(self, name):
+        # don't indent code if already indented
+        source = (self.source if self.source[0] in (' ', '\t')
+                  else indent(self.source))
+        return "def %s():\n%s" % (name, source)
+
+    def to_function(self, name):
+        exec self.to_function_text(name)
+        return locals()[name]
 
     def corrected_for_indent(self):
         if self.source and self.source[0] in (' ', '\t'):
@@ -397,6 +408,13 @@ class LazyAttributeMeta(type):
             try:
                 return schema_.validate(attr)
             except Exception as e:
+                if isinstance(attr, SourceCode):
+                    func = attr.to_function(key)
+                    new_attr = func()
+                    try:
+                        return schema_.validate(new_attr)
+                    except Exception as e:
+                        pass
                 raise self.schema_error("Validation of key %r failed: "
                                         "%s" % (key, str(e)))
         return func
