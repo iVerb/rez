@@ -890,6 +890,8 @@ class _PackageVariantSlice(_Common):
             return
 
         for orderer in (self.solver.package_orderers or []):
+            if not orderer.applies_to(self.package_name):
+                continue
             entries = orderer.reorder(self.entries, key=lambda x: x.package)
             if entries is not None:
                 self.entries = entries
@@ -1781,7 +1783,7 @@ class Solver(_Common):
         """
         self.package_paths = package_paths
         self.package_filter = package_filter
-        self.package_orderers = package_orderers
+        self.package_orderers = package_orderers or config.package_orderers
         self.pr = _Printer(verbosity, buf=buf)
         self.optimised = optimised
         self.callback = callback

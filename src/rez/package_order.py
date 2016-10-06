@@ -28,12 +28,27 @@ class PackageOrder(object):
         """
         raise NotImplementedError
 
+    def applies_to(self, package_name):
+        """Returns whether or not this orderer should be used to reorder a
+        package with the given family name
+
+        Args:
+            package_name: (str) The family name of the package we are considering
+
+        Returns:
+            (bool) Whether we should use this orderer to reorder the package
+        """
+        raise NotImplementedError
+
     @property
     def sha1(self):
         return sha1(repr(self)).hexdigest()
 
     def __repr__(self):
-        return "%s(%s)" % (self.__class__.__name__, str(self))
+        return "%s.from_pod(%s)" % (self.__class__.__name__, repr(self.to_pod()))
+
+    def __str__(self):
+        return str(self.to_pod())
 
 
 class TimestampPackageOrder(PackageOrder):
@@ -75,15 +90,19 @@ class TimestampPackageOrder(PackageOrder):
     """
     name = "soft_timestamp"
 
-    def __init__(self, timestamp, rank=0):
+    def __init__(self, packages, timestamp, rank=0):
         """Create a reorderer.
 
         Args:
+            packages: (str or list of str): packages that this orderer should apply to
             timestamp (int): Epoch time of timestamp. Packages before this time
                 are preferred.
             rank (int): If non-zero, allow version changes at this rank or above
                 past the timestamp.
         """
+        if isinstance(packages, basestring):
+            packages = [packages]
+        self.packages = packages
         self.timestamp = timestamp
         self.rank = rank
 
@@ -146,17 +165,24 @@ class TimestampPackageOrder(PackageOrder):
         after_.extend(reversed(postrank))
         return before + after_
 
+    def applies_to(self, package_name):
+        for package_pattern in self.packages:
+            if package_pattern == '*':
+                return True
+            if package_name == package_pattern:
+                return True
+        return False
+
     def to_pod(self):
-        return dict(timestamp=self.timestamp,
+        return dict(packages=self.packages,
+                    timestamp=self.timestamp,
                     rank=self.rank)
 
     @classmethod
     def from_pod(cls, data):
-        return cls(timestamp=data["timestamp"],
-                   rank=data["rank"])
-
-    def __str__(self):
-        return str(self.to_pod())
+        return cls(packages=data["packages"],
+                   timestamp=data["timestamp"],
+                   rank=data.get("rank"))
 
 
 def to_pod(orderer):
