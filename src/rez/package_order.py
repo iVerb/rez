@@ -1,6 +1,9 @@
 from inspect import isclass
 from hashlib import sha1
 
+from rez.exceptions import ConfigurationError
+from rez.vendor.version.version import _Comparable
+
 
 class PackageOrder(object):
     """Package reorderer base class."""
@@ -50,8 +53,34 @@ class PackageOrder(object):
     def __str__(self):
         return str(self.to_pod())
 
+class DefaultAppliesToMixin(object):
+    def init_packages(self, packages):
+        if packages == "*":
+            self.packages = packages
+        else:
+            if isinstance(packages, basestring):
+                packages = [packages]
+            self.packages = set(packages)
 
-class TimestampPackageOrder(PackageOrder):
+    def applies_to(self, package_name):
+        """Returns whether or not this orderer should be used to reorder a
+        package with the given family name
+
+        The default implementation simply checks if a package name is in a list;
+        or, if instead of list, the string "*" is passed, it matches all
+        packages
+
+        Args:
+            package_name: (str) The family name of the package we are considering
+
+        Returns:
+            (bool) Whether we should use this orderer to reorder the package
+        """
+        if self.packages == "*":
+            return True
+        return package_name in self.packages
+
+class TimestampPackageOrder(PackageOrder, DefaultAppliesToMixin):
     """A timestamp order function.
 
     Given a time T, this orderer returns packages released before T, in descending
@@ -100,9 +129,7 @@ class TimestampPackageOrder(PackageOrder):
             rank (int): If non-zero, allow version changes at this rank or above
                 past the timestamp.
         """
-        if isinstance(packages, basestring):
-            packages = [packages]
-        self.packages = packages
+        self.init_packages()
         self.timestamp = timestamp
         self.rank = rank
 
@@ -165,14 +192,6 @@ class TimestampPackageOrder(PackageOrder):
         after_.extend(reversed(postrank))
         return before + after_
 
-    def applies_to(self, package_name):
-        for package_pattern in self.packages:
-            if package_pattern == '*':
-                return True
-            if package_name == package_pattern:
-                return True
-        return False
-
     def to_pod(self):
         return dict(packages=self.packages,
                     timestamp=self.timestamp,
@@ -183,6 +202,182 @@ class TimestampPackageOrder(PackageOrder):
         return cls(packages=data["packages"],
                    timestamp=data["timestamp"],
                    rank=data.get("rank"))
+
+
+class CustomPackageOrder(PackageOrder):
+    """A package order that allows explicit specification of version ordering.
+
+    Specified through the "packages" attributes, which should be a dict which
+    maps from a package family name to a list of version ranges to prioritize,
+    in decreasing priority order.
+
+    As an example, consider a package splunge which has versions:
+
+      [1.0, 1.1, 1.2, 1.4, 2.0, 2.1, 3.0, 3.2]
+
+    By default, version priority is given to the higest version, so version
+    priority, from most to least preferred, is:
+
+      [3.2, 3.0, 2.1, 2.0, 1.4, 1.2, 1.1, 1.0]
+
+    However, if you set a custom package order like this:
+
+      package_orderers:
+      - type: custom
+        packages:
+          splunge: ['2', '1.1+<1.4']
+
+    Then the preferred versions, from most to least preferred, will be:
+     [2.1, 2.0, 1.2, 1.1, 3.2, 3.0, 1.4, 1.0]
+
+    Any version which does not match any of these expressions are sorted in
+    decreasing version order (like normal) and then appended to this list (so they
+    have lower priority). This provides an easy means to effectively set a
+    "default version."  So if you do:
+
+      package_orderers:
+      - type: custom
+        packages:
+          splunge: ['3.0']
+
+    resulting order is:
+
+      [3.0, 3.2, 2.1, 2.0, 1.4, 1.2, 1.1, 1.0]
+
+    You may also include a single False or empty string in the list, in which case
+    all "other" versions will be placed at that spot. ie
+
+      package_orderers:
+      - type: custom
+        packages:
+          splunge: ['', '3+']
+
+    yields:
+
+     [2.1, 2.0, 1.4, 1.2, 1.1, 1.0, 3.2, 3.0]
+
+    Note that you could also have gotten the same result by doing:
+
+      package_orderers:
+      - type: custom
+        packages:
+          splunge: ['<3']
+
+    If a version matches more than one range expression, it will be placed at
+    the highest-priority matching spot, so:
+
+      package_orderers:
+      - type: custom
+        packages:
+          splunge: ['1.2+<=2.0', '1.1+<3']
+
+    gives:
+     [2.0, 1.4, 1.2, 2.1, 1.1, 3.2, 3.0, 1.0]
+
+    Also note that this does not change the version sort order for any purpose but
+    determining solving priorities - for instance, even if version priorities is:
+
+      package_orderers:
+      - type: custom
+        packages:
+          splunge: [2, 3, 1]
+
+    The expression splunge-1+<3 would still match version 2.
+    """
+    name = "custom"
+
+    def __init__(self, packages):
+        """Create a reorderer.
+
+        Args:
+            packages: (dict from str to list of VersionRange): packages that
+                this orderer should apply to, and the version priority ordering
+                for that package
+        """
+        self.packages = self._packages_from_pod(packages)
+        self._version_key_cache = {}
+
+
+    def reorder(self, iterable, key=None):
+        key = key or (lambda x: x)
+
+        def sort_key(x):
+            return self.version_priority_key_cached(key(x))
+
+        return sorted(iterable, key=sort_key, reverse=True)
+
+    def version_priority_key_cached(self, package):
+        family_cache = self._version_key_cache.setdefault(package.name, {})
+        key = family_cache.get(package.version)
+        if key is not None:
+            return key
+
+        key = self.version_priority_key_uncached(package)
+        family_cache[package.version] = key
+        return key
+
+    def version_priority_key_uncached(self, package):
+        version_priorities = self.packages[package.name]
+
+        default_key = -1
+        for sort_order_index, range in enumerate(version_priorities):
+            # in the config, version_priorities are given in decreasing
+            # priority order... however, we want a sort key that sorts in the
+            # same way that versions do - where higher values are higher
+            # priority - so we need to take the inverse of the index
+            sort_key = len(version_priorities) - sort_order_index
+            if range in (False, ""):
+                if default_key != -1:
+                    raise ValueError("version_priorities may only have one "
+                                     "False / empty value")
+                default_key = sort_key
+                continue
+            if range.contains_version(package.version):
+                break
+        else:
+            # For now, we're permissive with the version_sort_order - it may
+            # contain ranges which match no actual versions, and if an actual
+            # version matches no entry in the version_sort_order, it is simply
+            # placed after other entries
+            sort_key = default_key
+        return sort_key, package.version
+
+    def applies_to(self, package_name):
+        return package_name in self.packages
+
+    @classmethod
+    def _packages_to_pod(cls, packages):
+        return dict((package, [str(v) for v in versions])
+                    for (package, versions) in packages.iteritems())
+
+    @classmethod
+    def _packages_from_pod(cls, packages):
+        from rez.vendor.version.version import VersionRange
+        parsed_dict = {}
+        for package, versions in packages.iteritems():
+            new_versions = []
+            numFalse = 0
+            for v in versions:
+                if v in ("", False):
+                    v = False
+                    numFalse += 1
+                else:
+                    if not isinstance(v, VersionRange):
+                        if isinstance(v, (int, float)):
+                            v = str(v)
+                        v = VersionRange(v)
+                new_versions.append(v)
+            if numFalse > 1:
+                raise ConfigurationError("version_priorities for CustomPackageOrder may only have one False / empty value")
+            parsed_dict[package] = new_versions
+        return parsed_dict
+
+    def to_pod(self):
+        return dict(packages=self._packages_to_pod(self.packages))
+
+    @classmethod
+    def from_pod(cls, data):
+        return cls(packages=data["packages"])
 
 
 def to_pod(orderer):

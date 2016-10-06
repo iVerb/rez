@@ -2,14 +2,16 @@
 test configuration settings
 """
 import rez.vendor.unittest2 as unittest
-from rez.tests.util import TestBase
+from rez.tests.util import TestBase, get_cli_output
 from rez.exceptions import ConfigurationError
-from rez.config import Config, get_module_root_config
+from rez.config import Config, get_module_root_config, config,\
+    _create_locked_config
 from rez.system import system
 from rez.utils.data_utils import RO_AttrDictWrapper
 from rez.packages_ import get_developer_package
 import os
 import os.path
+import sys
 
 
 class TestConfig(TestBase):
@@ -214,6 +216,25 @@ class TestConfig(TestBase):
             self.assertEqual(c.dumb_dict, {'foo': 'bar', 'more': 'stuff'})
         finally:
             os.environ = old_environ
+
+    def test_6_command_line_config_version_priority(self):
+        """Check that the rez-config command-line tool works when using a
+        custom package version-priority"""
+        import rez.vendor.yaml as yaml
+
+        ver_prio = [{"type": "custom",
+                     "packages": {'foo': ['2'], 'bar': 'earliest'}}]
+        self.update_settings({"package_orderers": ver_prio})
+
+        output, exitcode = get_cli_output(['config'])
+        self.assertEqual(exitcode, 0)
+        parsed_out = yaml.load(output)
+        self.assertEqual(ver_prio, parsed_out['package_orders'])
+
+        output, exitcode = get_cli_output(['config', 'package_orders'])
+        self.assertEqual(exitcode, 0)
+        parsed_out = yaml.load(output)
+        self.assertEqual(ver_prio, parsed_out)
 
 
 if __name__ == '__main__':
