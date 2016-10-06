@@ -53,7 +53,8 @@ class PackageOrder(object):
     def __str__(self):
         return str(self.to_pod())
 
-class DefaultAppliesToMixin(object):
+
+class DefaultAppliesOrder(PackageOrder):
     def init_packages(self, packages):
         if packages == "*":
             self.packages = packages
@@ -80,7 +81,33 @@ class DefaultAppliesToMixin(object):
             return True
         return package_name in self.packages
 
-class TimestampPackageOrder(PackageOrder, DefaultAppliesToMixin):
+
+class ReversedPackageOrder(DefaultAppliesOrder):
+    """Package orderer that sorts in reverse version order"""
+    name = "reversed"
+
+    def __init__(self, packages):
+        """Create a reorderer.
+
+        Args:
+            packages: (str or list of str): packages that this orderer should apply to
+        """
+        self.init_packages(packages)
+
+    def reorder(self, iterable, key=None):
+        key = key or (lambda x: x)
+        # all we need to do is NOT reverse - we will get lowest version first
+        return sorted(iterable, key=lambda x: key(x).version)
+
+    def to_pod(self):
+        return dict(packages=self.packages)
+
+    @classmethod
+    def from_pod(cls, data):
+        return cls(packages=data["packages"])
+
+
+class TimestampPackageOrder(DefaultAppliesOrder):
     """A timestamp order function.
 
     Given a time T, this orderer returns packages released before T, in descending

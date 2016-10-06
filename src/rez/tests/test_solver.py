@@ -403,37 +403,84 @@ class TestSolver(TestBase):
         self._solve(["python<2.7"],
                     ["python-2.6.8[]"])
 
-
-    def test_19_latest(self):
-        """Test setting a package to latest version_priority
+    def test_19_reversed_str(self):
+        """Test setting a package to reversed version_priority
         """
         config.override("package_orderers",
-                        [{"type": "custom",
-                          "packages": {}}])
+                        [{"type": "reversed",
+                          "packages": "python"}])
         self._solve(["python"],
-                    ["python-2.7.0[]"])
+                    ["python-2.5.2[]"])
         self._solve(["python", "!python-2.7.0"],
-                    ["python-2.6.8[]"])
+                    ["python-2.5.2[]"])
+        self._solve(["python", "!python-2.5.2"],
+                    ["python-2.6.0[]"])
         self._solve(["python-2.6"],
-                    ["python-2.6.8[]"])
+                    ["python-2.6.0[]"])
         self._solve(["python-2.6+<2.7"],
-                    ["python-2.6.8[]"])
+                    ["python-2.6.0[]"])
         self._solve(["python<2.6"],
                     ["python-2.5.2[]"])
 
+    def test_20_reversed_list(self):
+        """Test setting a package to reversed version_priority
+        """
         config.override("package_orderers",
-                        [{"type": "custom",
-                          "packages": {"python": "latest"}}])
+                        [{"type": "reversed",
+                          "packages": ["python"]}])
         self._solve(["python"],
-                    ["python-2.7.0[]"])
+                    ["python-2.5.2[]"])
         self._solve(["python", "!python-2.7.0"],
-                    ["python-2.6.8[]"])
+                    ["python-2.5.2[]"])
+        self._solve(["python", "!python-2.5.2"],
+                    ["python-2.6.0[]"])
         self._solve(["python-2.6"],
-                    ["python-2.6.8[]"])
+                    ["python-2.6.0[]"])
         self._solve(["python-2.6+<2.7"],
-                    ["python-2.6.8[]"])
+                    ["python-2.6.0[]"])
         self._solve(["python<2.6"],
                     ["python-2.5.2[]"])
+
+    def test_21_reversed_is_requirement(self):
+        """Test setting a package to reversed version_priority, when it is a
+        requirement
+        """
+        config.override("package_orderers",
+                        [{"type": "reversed",
+                          "packages": "python"}])
+        self._solve(["pyfoo"],
+                    ["python-2.6.0[]", "pyfoo-3.1.0[]"])
+        self._solve(["pyfoo-3.0"],
+                    ["python-2.5.2[]", "pyfoo-3.0.0[]"])
+        self._solve(["pyfoo-3.1"],
+                    ["python-2.6.0[]", "pyfoo-3.1.0[]"])
+        self._solve(["pybah"],
+                    ["python-2.5.2[]", "pybah-5[]"])
+        self._solve(["pybah-4"],
+                    ["python-2.6.0[]", "pybah-4[]"])
+        self._solve(["pybah-5"],
+                    ["python-2.5.2[]", "pybah-5[]"])
+
+
+    def test_22_reversed_has_requirement(self):
+        """Test setting a package to reversed version_priority, when it has a
+        requirement
+        """
+        config.override("package_orderers",
+                        [{"type": "reversed",
+                          "packages": ["pyfoo", "pybah"]}])
+        self._solve(["pyfoo"],
+                    ["python-2.5.2[]", "pyfoo-3.0.0[]"])
+        self._solve(["pyfoo-3.0"],
+                    ["python-2.5.2[]", "pyfoo-3.0.0[]"])
+        self._solve(["pyfoo-3.1"],
+                    ["python-2.6.8[]", "pyfoo-3.1.0[]"])
+        self._solve(["pybah"],
+                    ["python-2.6.8[]", "pybah-4[]"])
+        self._solve(["pybah-4"],
+                    ["python-2.6.8[]", "pybah-4[]"])
+        self._solve(["pybah-5"],
+                    ["python-2.5.2[]", "pybah-5[]"])
 
 
 if __name__ == '__main__':
