@@ -217,24 +217,43 @@ class TestConfig(TestBase):
         finally:
             os.environ = old_environ
 
-    def test_6_command_line_config_version_priority(self):
+    def test_7_command_line_config_version_priority(self):
         """Check that the rez-config command-line tool works when using a
         custom package version-priority"""
         import rez.vendor.yaml as yaml
 
-        ver_prio = [{"type": "custom",
-                     "packages": {'foo': ['2'], 'bar': 'earliest'}}]
-        self.update_settings({"package_orderers": ver_prio})
+        ver_prio_in = [
+            {"type": "custom",
+             "packages": {"foo": ["2"]}},
+            {"type": "reversed",
+             "packages": ["bar"]},
+            {"type": "soft_timestamp",
+             "timestamp": 1479846074,
+             "packages": ["baz"]},
+        ]
+
+        ver_prio_out = [
+            {"type": "custom",
+             "packages": {"foo": ["2"]}},
+            {"type": "reversed",
+             "packages": ["bar"]},
+            {"type": "soft_timestamp",
+             "timestamp": 1479846074,
+             "packages": ["baz"],
+             "rank": None},
+        ]
+
+        self.update_settings({"package_orderers": ver_prio_in})
 
         output, exitcode = get_cli_output(['config'])
         self.assertEqual(exitcode, 0)
         parsed_out = yaml.load(output)
-        self.assertEqual(ver_prio, parsed_out['package_orders'])
+        self.assertEqual(ver_prio_out, parsed_out['package_orderers'])
 
-        output, exitcode = get_cli_output(['config', 'package_orders'])
+        output, exitcode = get_cli_output(['config', 'package_orderers'])
         self.assertEqual(exitcode, 0)
         parsed_out = yaml.load(output)
-        self.assertEqual(ver_prio, parsed_out)
+        self.assertEqual(ver_prio_out, parsed_out)
 
 
 if __name__ == '__main__':

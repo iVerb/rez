@@ -223,7 +223,6 @@ class PackageOrderers(Setting):
         cls_name = data.pop("type")
         return rez.package_order.from_pod((cls_name, data))
 
-
     _env_var_name = None
 
 

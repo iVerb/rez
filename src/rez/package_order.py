@@ -3,9 +3,10 @@ from hashlib import sha1
 
 from rez.exceptions import ConfigurationError
 from rez.vendor.version.version import _Comparable
+from rez.utils.yaml import YamlDumpable
 
 
-class PackageOrder(object):
+class PackageOrder(YamlDumpable):
     """Package reorderer base class."""
     name = None
 
@@ -52,6 +53,11 @@ class PackageOrder(object):
 
     def __str__(self):
         return str(self.to_pod())
+
+    def to_yaml_pod(self):
+        data = self.to_pod()
+        data['type'] = self.name
+        return data
 
 
 class DefaultAppliesOrder(PackageOrder):
@@ -100,7 +106,7 @@ class ReversedPackageOrder(DefaultAppliesOrder):
         return sorted(iterable, key=lambda x: key(x).version)
 
     def to_pod(self):
-        return dict(packages=self.packages)
+        return dict(packages=sorted(self.packages))
 
     @classmethod
     def from_pod(cls, data):
@@ -156,7 +162,7 @@ class TimestampPackageOrder(DefaultAppliesOrder):
             rank (int): If non-zero, allow version changes at this rank or above
                 past the timestamp.
         """
-        self.init_packages()
+        self.init_packages(packages)
         self.timestamp = timestamp
         self.rank = rank
 
@@ -220,7 +226,7 @@ class TimestampPackageOrder(DefaultAppliesOrder):
         return before + after_
 
     def to_pod(self):
-        return dict(packages=self.packages,
+        return dict(packages=sorted(self.packages),
                     timestamp=self.timestamp,
                     rank=self.rank)
 
