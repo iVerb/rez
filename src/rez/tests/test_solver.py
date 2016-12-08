@@ -685,6 +685,15 @@ class TestSolver(TestBase):
                 "reorderable-3.1.1",
             ])
 
+    def test_31_orderer_used_for_variants(self):
+        self._solve(["pyvariants"],
+                    ["python-2.7.0[]", "pyvariants-2[0]"])
+
+        config.override("package_orderers",
+                        [{"type": "reversed",
+                          "packages": "python"}])
+        self._solve(["pyvariants"],
+                    ["python-2.6.8[]", "pyvariants-2[2]"])
 
 if __name__ == '__main__':
     unittest.main()
