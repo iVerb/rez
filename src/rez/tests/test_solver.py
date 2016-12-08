@@ -21,7 +21,7 @@ class TestSolver(TestBase):
             packages_path=[cls.packages_path],
             package_filter=None)
 
-    def _create_solvers(self, reqs):
+    def _create_solvers(self, reqs, do_permutations=True):
         s1 = Solver(reqs,
                     self.packages_path,
                     optimised=True,
@@ -32,20 +32,22 @@ class TestSolver(TestBase):
                     verbosity=Solver.max_verbosity)
 
         s_perms = []
-        perms = itertools.permutations(reqs)
-        for reqs_ in perms:
-            s = Solver(reqs_,
-                       self.packages_path,
-                       optimised=True,
-                       verbosity=Solver.max_verbosity)
-            s_perms.append(s)
+        if do_permutations:
+            perms = itertools.permutations(reqs)
+            for reqs_ in perms:
+                s = Solver(reqs_,
+                           self.packages_path,
+                           optimised=True,
+                           verbosity=Solver.max_verbosity)
+                s_perms.append(s)
 
         return (s1, s2, s_perms)
 
-    def _solve(self, packages, expected_resolve):
+    def _solve(self, packages, expected_resolve, do_permutations=True):
         print
         reqs = [Requirement(x) for x in packages]
-        s1, s2, s_perms = self._create_solvers(reqs)
+        s1, s2, s_perms = self._create_solvers(reqs,
+                                               do_permutations=do_permutations)
 
         s1.solve()
         self.assertEqual(s1.status, SolverStatus.solved)
@@ -63,10 +65,11 @@ class TestSolver(TestBase):
         resolve2 = [str(x) for x in s2.resolved_packages]
         self.assertEqual(resolve2, resolve)
 
-        print "checking that permutations also succeed..."
-        for s in s_perms:
-            s.solve()
-            self.assertEqual(s.status, SolverStatus.solved)
+        if do_permutations:
+            print "checking that permutations also succeed..."
+            for s in s_perms:
+                s.solve()
+                self.assertEqual(s.status, SolverStatus.solved)
 
         return s1
 
@@ -481,6 +484,206 @@ class TestSolver(TestBase):
                     ["python-2.6.8[]", "pybah-4[]"])
         self._solve(["pybah-5"],
                     ["python-2.5.2[]", "pybah-5[]"])
+
+    def _test_complete_ordering(self, request, expected_order):
+        exclude = []
+        for next in expected_order:
+            self._solve(request + exclude, [next + '[]'],
+                        do_permutations=False)
+            exclude.append('!{}'.format(next))
+
+    def test_23_timestamp_no_rank_exact_timestamp(self):
+        config.override("package_orderers",
+                        [{"type": "soft_timestamp",
+                          "packages": ["reorderable"],
+                          "timestamp": 1470728472,
+                         }])
+        self._test_complete_ordering(
+            ['reorderable'],
+            [
+                "reorderable-2.0.0",
+                "reorderable-1.9.1",
+                "reorderable-1.9.0",
+                "reorderable-2.0.5",
+                "reorderable-2.0.6",
+                "reorderable-2.1.0",
+                "reorderable-2.1.1",
+                "reorderable-2.1.5",
+                "reorderable-2.2.0",
+                "reorderable-2.2.1",
+                "reorderable-3.0.0",
+                "reorderable-3.1.1",
+            ])
+
+    def test_24_timestamp_no_rank_inexact_timestamp(self):
+        config.override("package_orderers",
+                        [{"type": "soft_timestamp",
+                          "packages": ["reorderable"],
+                          "timestamp": 1470728473,
+                          }])
+        self._test_complete_ordering(
+            ['reorderable'],
+            [
+                "reorderable-2.0.0",
+                "reorderable-1.9.1",
+                "reorderable-1.9.0",
+                "reorderable-2.0.5",
+                "reorderable-2.0.6",
+                "reorderable-2.1.0",
+                "reorderable-2.1.1",
+                "reorderable-2.1.5",
+                "reorderable-2.2.0",
+                "reorderable-2.2.1",
+            ])
+
+
+    def test_25_timestamp_rank2_exact_timestamp(self):
+        config.override("package_orderers",
+                        [{"type": "soft_timestamp",
+                          "packages": ["reorderable"],
+                          "timestamp": 1470728474,
+                          "rank": 2,
+                          }])
+        self._test_complete_ordering(
+            ['reorderable'],
+            [
+                "reorderable-2.2.1",
+                "reorderable-2.2.0",
+                "reorderable-2.1.5",
+                "reorderable-2.1.1",
+                "reorderable-2.1.0",
+                "reorderable-2.0.6",
+                "reorderable-2.0.5",
+                "reorderable-2.0.0",
+                "reorderable-1.9.1",
+                "reorderable-1.9.0",
+                "reorderable-3.1.1",
+                "reorderable-3.0.0",
+            ])
+
+
+    def test_26_timestamp_rank2_inexact_timestamp(self):
+        config.override("package_orderers",
+                        [{"type": "soft_timestamp",
+                          "packages": ["reorderable"],
+                          "timestamp": 1470728475,
+                          "rank": 2,
+                          }])
+        self._test_complete_ordering(
+            ['reorderable'],
+            [
+                "reorderable-2.2.1",
+                "reorderable-2.2.0",
+                "reorderable-2.1.5",
+                "reorderable-2.1.1",
+                "reorderable-2.1.0",
+                "reorderable-2.0.6",
+                "reorderable-2.0.5",
+                "reorderable-2.0.0",
+                "reorderable-1.9.1",
+                "reorderable-1.9.0",
+                "reorderable-3.1.1",
+                "reorderable-3.0.0",
+            ])
+
+    def test_27_timestamp_rank3_exact_timestamp(self):
+        config.override("package_orderers",
+                        [{"type": "soft_timestamp",
+                          "packages": ["reorderable"],
+                          "timestamp": 1470728474,
+                          "rank": 3,
+                          }])
+        self._test_complete_ordering(
+            ['reorderable'],
+            [
+                "reorderable-2.0.6",
+                "reorderable-2.0.5",
+                "reorderable-2.0.0",
+                "reorderable-1.9.1",
+                "reorderable-1.9.0",
+                "reorderable-2.1.5",
+                "reorderable-2.1.1",
+                "reorderable-2.1.0",
+                "reorderable-2.2.1",
+                "reorderable-2.2.0",
+                "reorderable-3.0.0",
+                "reorderable-3.1.1",
+            ])
+
+
+    def test_28_timestamp_rank3_inexact_timestamp(self):
+        config.override("package_orderers",
+                        [{"type": "soft_timestamp",
+                          "packages": ["reorderable"],
+                          "timestamp": 1470728475,
+                          "rank": 3,
+                          }])
+        self._test_complete_ordering(
+            ['reorderable'],
+            [
+                "reorderable-2.0.6",
+                "reorderable-2.0.5",
+                "reorderable-2.0.0",
+                "reorderable-1.9.1",
+                "reorderable-1.9.0",
+                "reorderable-2.1.5",
+                "reorderable-2.1.1",
+                "reorderable-2.1.0",
+                "reorderable-2.2.1",
+                "reorderable-2.2.0",
+                "reorderable-3.0.0",
+                "reorderable-3.1.1",
+            ])
+
+
+    def test_29_timestamp_rank4_exact_timestamp(self):
+        config.override("package_orderers",
+                        [{"type": "soft_timestamp",
+                          "packages": ["reorderable"],
+                          "timestamp": 1470728474,
+                          "rank": 4,
+                          }])
+        self._test_complete_ordering(
+            ['reorderable'],
+            [
+                "reorderable-2.0.5",
+                "reorderable-2.0.0",
+                "reorderable-1.9.1",
+                "reorderable-1.9.0",
+                "reorderable-2.0.6",
+                "reorderable-2.1.0",
+                "reorderable-2.1.1",
+                "reorderable-2.1.5",
+                "reorderable-2.2.0",
+                "reorderable-2.2.1",
+                "reorderable-3.0.0",
+                "reorderable-3.1.1",
+            ])
+
+
+    def test_30_timestamp_rank4_inexact_timestamp(self):
+        config.override("package_orderers",
+                        [{"type": "soft_timestamp",
+                          "packages": ["reorderable"],
+                          "timestamp": 1470728475,
+                          "rank": 4,
+                          }])
+        self._test_complete_ordering(
+            ['reorderable'],
+            [
+                "reorderable-2.0.5",
+                "reorderable-2.0.0",
+                "reorderable-1.9.1",
+                "reorderable-1.9.0",
+                "reorderable-2.0.6",
+                "reorderable-2.1.0",
+                "reorderable-2.1.1",
+                "reorderable-2.1.5",
+                "reorderable-2.2.0",
+                "reorderable-2.2.1",
+                "reorderable-3.0.0",
+                "reorderable-3.1.1",
+            ])
 
 
 if __name__ == '__main__':
