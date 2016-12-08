@@ -1,5 +1,6 @@
 from inspect import isclass
 from hashlib import sha1
+from abc import ABCMeta, abstractmethod
 
 from rez.exceptions import ConfigurationError
 from rez.vendor.version.version import _Comparable
@@ -27,24 +28,60 @@ class ReverseSorted(_Comparable):
 
 class PackageOrder(YamlDumpable):
     """Package reorderer base class."""
+    __metaclass__ = ABCMeta
+
     name = None
 
     def __init__(self):
         pass
 
-    def sort_key(self, package):
+    def sort_key(self, package_name, version_like):
         """Returns a sort key usable for sorting these packages within the
         same family
 
-        Note:
-            Returning None may cause rez to pass the package list to the
-            next orderer
+        Args:
+            package_name: (str) The family name of the package we are sorting
+            verison_like: (Version|_LowerBound|_UpperBound|_Bound|VersionRange)
+                the version-like object you wish to generate a key for
+
+        Returns:
+            Comparable object
+        """
+        from rez.vendor.version.version import Version, _LowerBound, _UpperBound, _Bound, VersionRange
+        if isinstance(version_like, VersionRange):
+            return tuple(self.sort_key(package_name, bound)
+                         for bound in version_like.bounds)
+        elif isinstance(version_like, _Bound):
+            return (self.sort_key(package_name, version_like.lower),
+                    self.sort_key(package_name, version_like.upper))
+        elif isinstance(version_like, _LowerBound):
+            inclusion_key = -2 if version_like.inclusive else -1
+            return (self.sort_key(package_name, version_like.version),
+                    inclusion_key)
+        elif isinstance(version_like, _UpperBound):
+            inclusion_key = 2 if version_like.inclusive else 1
+            return (self.sort_key(package_name, version_like.version),
+                    inclusion_key)
+        elif isinstance(version_like, Version):
+            # finally, the bit that we actually use the sort_key_implementation
+            # for...
+            return self.sort_key_implementation(package_name, version_like)
+
+    @abstractmethod
+    def sort_key_implementation(self, package_name, version):
+        """Returns a sort key usable for sorting these packages within the
+        same family
+
+        Args:
+            package_name: (str) The family name of the package we are sorting
+            verison: (Version) the version object you wish to generate a key for
 
         Returns:
             Comparable object
         """
         raise NotImplementedError
 
+    @abstractmethod
     def applies_to(self, package_name):
         """Returns whether or not this orderer should be used to reorder a
         package with the given family name
@@ -113,8 +150,8 @@ class ReversedPackageOrder(DefaultAppliesOrder):
         """
         self.init_packages(packages)
 
-    def sort_key(self, package):
-        return ReverseSorted(package.version)
+    def sort_key_implementation(self, package_name, version):
+        return ReverseSorted(version)
 
     def to_pod(self):
         return dict(packages=sorted(self.packages))
@@ -221,30 +258,31 @@ class TimestampPackageOrder(DefaultAppliesOrder):
                     return first_after
         return first_after
 
-    def _calc_sort_key(self, package):
-        first_after = self.get_first_after(package.name)
+    def _calc_sort_key(self, package_name, version):
+        first_after = self.get_first_after(package_name)
         if first_after is None:
             # all packages are before T
             is_before = True
         else:
-            is_before = int(package.version < first_after)
+            is_before = int(version < first_after)
 
         # ascend below rank, but descend within
         if is_before:
-            return (is_before, package.version)
+            return (is_before, version)
         else:
             if self.rank:
                 return (is_before,
-                        ReverseSorted(package.version.trim(self.rank - 1)),
-                        package.version.tokens[self.rank - 1:])
+                        ReverseSorted(version.trim(self.rank - 1)),
+                        version.tokens[self.rank - 1:])
             else:
-                return (is_before, ReverseSorted(package.version))
+                return (is_before, ReverseSorted(version))
 
-    def sort_key(self, package):
-        result = self._cached_sort_key.get(package.qualified_name)
+    def sort_key_implementation(self, package_name, version):
+        cache_key = (package_name, str(version))
+        result = self._cached_sort_key.get(cache_key)
         if result is None:
-            result = self._calc_sort_key(package)
-            self._cached_sort_key[package.qualified_name] = result
+            result = self._calc_sort_key(package_name, version)
+            self._cached_sort_key[cache_key] = result
         return result
 
     def to_pod(self):
@@ -352,18 +390,18 @@ class CustomPackageOrder(PackageOrder):
         self.packages = self._packages_from_pod(packages)
         self._version_key_cache = {}
 
-    def sort_key(self, package):
-        family_cache = self._version_key_cache.setdefault(package.name, {})
-        key = family_cache.get(package.version)
+    def sort_key_implementation(self, package_name, version):
+        family_cache = self._version_key_cache.setdefault(package_name, {})
+        key = family_cache.get(version)
         if key is not None:
             return key
 
-        key = self.version_priority_key_uncached(package)
-        family_cache[package.version] = key
+        key = self.version_priority_key_uncached(package_name, version)
+        family_cache[version] = key
         return key
 
-    def version_priority_key_uncached(self, package):
-        version_priorities = self.packages[package.name]
+    def version_priority_key_uncached(self, package_name, version):
+        version_priorities = self.packages[package_name]
 
         default_key = -1
         for sort_order_index, range in enumerate(version_priorities):
@@ -371,22 +409,22 @@ class CustomPackageOrder(PackageOrder):
             # priority order... however, we want a sort key that sorts in the
             # same way that versions do - where higher values are higher
             # priority - so we need to take the inverse of the index
-            sort_key = len(version_priorities) - sort_order_index
+            priority_sort_key = len(version_priorities) - sort_order_index
             if range in (False, ""):
                 if default_key != -1:
                     raise ValueError("version_priorities may only have one "
                                      "False / empty value")
-                default_key = sort_key
+                default_key = priority_sort_key
                 continue
-            if range.contains_version(package.version):
+            if range.contains_version(version):
                 break
         else:
             # For now, we're permissive with the version_sort_order - it may
             # contain ranges which match no actual versions, and if an actual
             # version matches no entry in the version_sort_order, it is simply
             # placed after other entries
-            sort_key = default_key
-        return sort_key, package.version
+            priority_sort_key = default_key
+        return priority_sort_key, version
 
     def applies_to(self, package_name):
         return package_name in self.packages
@@ -446,6 +484,18 @@ def register_orderer(cls):
     else:
         return False
 
+def get_orderer(package_name, orderers=None):
+    from rez.config import config
+    if orderers is None:
+        orderers = config.package_orderers
+    if not orderers:
+        orderers = []
+    found_orderer = None
+    for orderer in orderers:
+        if orderer.applies_to(package_name):
+            found_orderer = orderer
+            break
+    return found_orderer
 
 # registration of builtin orderers
 _orderers = {}
