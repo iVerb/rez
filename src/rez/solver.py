@@ -857,7 +857,9 @@ class _PackageVariantSlice(_Common):
 
         if not fams:
             # trivial case, split on first variant
+            self.entries[0].sort()
             return _split(0, 1)
+
 
         # find split point - first variant with no dependency shared with previous
         prev = None
@@ -892,7 +894,9 @@ class _PackageVariantSlice(_Common):
         for orderer in (self.solver.package_orderers or []):
             if not orderer.applies_to(self.package_name):
                 continue
-            entries = orderer.reorder(self.entries, key=lambda x: x.package)
+            def sort_key(entry):
+                return orderer.sort_key(entry.package)
+            entries = sorted(self.entries, key=sort_key, reverse=True)
             if entries is not None:
                 self.entries = entries
                 self.sorted = True
