@@ -26,6 +26,32 @@ class ReverseSorted(_Comparable):
         return '%s(%r)' % (type(self).__name__, self.obj)
 
 
+class FallbackComparable(_Comparable):
+    """First tries to compare objects using the main_comparable, but if that
+    fails, compares using the fallback_comparable object.
+    """
+
+    def __init__(self, main_comparable, fallback_comparable):
+        self.main_comparable = main_comparable
+        self.fallback_comparable = fallback_comparable
+
+    def __eq__(self, other):
+        try:
+            return self.main_comparable == other.main_comparable
+        except Exception:
+            return self.fallback_comparable == other.fallback_comparable
+
+    def __lt__(self, other):
+        try:
+            return self.main_comparable < other.main_comparable
+        except Exception:
+            return self.fallback_comparable < other.fallback_comparable
+
+    def __repr__(self):
+        return '%s(%r, %r)' % (type(self).__name__, self.main_comparable,
+                               self.fallback_comparable)
+
+
 class PackageOrder(YamlDumpable):
     """Package reorderer base class."""
     __metaclass__ = ABCMeta
@@ -65,7 +91,11 @@ class PackageOrder(YamlDumpable):
         elif isinstance(version_like, Version):
             # finally, the bit that we actually use the sort_key_implementation
             # for...
-            return self.sort_key_implementation(package_name, version_like)
+            # Need to use a FallbackComparable because we can compare versions
+            # of different packages...
+            return FallbackComparable(
+                self.sort_key_implementation(package_name, version_like),
+                version_like)
 
     @abstractmethod
     def sort_key_implementation(self, package_name, version):
@@ -109,8 +139,24 @@ class PackageOrder(YamlDumpable):
         data['type'] = self.name
         return data
 
+    @abstractmethod
+    def to_pod(self):
+        raise NotImplementedError
+
+    @classmethod
+    def from_pod(self, data):
+        raise NotImplementedError
+
 
 class DefaultAppliesOrder(PackageOrder):
+    def __init__(self, packages):
+        """Create a reorderer.
+
+        Args:
+            packages: (str or list of str): packages that this orderer should apply to
+        """
+        self.init_packages(packages)
+
     def init_packages(self, packages):
         if packages == "*":
             self.packages = packages
@@ -138,17 +184,24 @@ class DefaultAppliesOrder(PackageOrder):
         return package_name in self.packages
 
 
+class DefaultOrderer(DefaultAppliesOrder):
+    """Package orderer that just sorts in standard version orders"""
+    name = "default"
+
+    def sort_key_implementation(self, package_name, version):
+        return version
+
+    def to_pod(self):
+        return dict(packages=sorted(self.packages))
+
+    @classmethod
+    def from_pod(cls, data):
+        return cls(packages=data["packages"])
+
+
 class ReversedPackageOrder(DefaultAppliesOrder):
     """Package orderer that sorts in reverse version order"""
     name = "reversed"
-
-    def __init__(self, packages):
-        """Create a reorderer.
-
-        Args:
-            packages: (str or list of str): packages that this orderer should apply to
-        """
-        self.init_packages(packages)
 
     def sort_key_implementation(self, package_name, version):
         return ReverseSorted(version)
@@ -210,7 +263,7 @@ class TimestampPackageOrder(DefaultAppliesOrder):
             rank (int): If non-zero, allow version changes at this rank or above
                 past the timestamp.
         """
-        self.init_packages(packages)
+        super(TimestampPackageOrder, self).__init__(packages)
         self.timestamp = timestamp
         self.rank = rank
 
@@ -490,7 +543,7 @@ def get_orderer(package_name, orderers=None):
         orderers = config.package_orderers
     if not orderers:
         orderers = []
-    found_orderer = None
+    found_orderer = DefaultOrderer('*')
     for orderer in orderers:
         if orderer.applies_to(package_name):
             found_orderer = orderer

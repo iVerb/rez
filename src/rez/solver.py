@@ -502,10 +502,7 @@ class _PackageEntry(object):
                     if req is not None:
                         orderer = get_orderer(req.name,
                                               self.solver.package_orderers or [])
-                        if orderer is not None:
-                            range_key = orderer.sort_key(req.name, req.range)
-                        else:
-                            range_key = req.range
+                        range_key = orderer.sort_key(req.name, req.range)
                         requested_key.append((-i, range_key))
                         names.add(req.name)
 
@@ -514,12 +511,8 @@ class _PackageEntry(object):
                 if not request.conflict and request.name not in names:
                     orderer = get_orderer(request.name,
                                           self.solver.package_orderers or [])
-                    if orderer is not None:
-                        range_key = orderer.sort_key(request.name,
-                                                     request.range)
-                    else:
-                        range_key = request.range
-
+                    range_key = orderer.sort_key(request.name,
+                                                 request.range)
                     additional_key.append((range_key, request.name))
 
             if (VariantSelectMode[config.variant_select_mode] ==
