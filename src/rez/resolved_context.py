@@ -647,7 +647,7 @@ class ResolvedContext(object):
             buf (file-like object): Where to print this info to.
             verbosity (bool): Verbose mode.
             source_order (bool): If True, print resolved packages in the order
-                they are sources, rather than alphabetical order.
+                they are sourced, rather than alphabetical order.
             show_resolved_uris (bool): By default, resolved packages have their
                 'root' property listed, or their 'uri' if 'root' is None. Use
                 this option to list 'uri' regardless.
@@ -1521,20 +1521,19 @@ class ResolvedContext(object):
         for pkg in resolved_pkgs:
             _minor_heading("variables for package %s" % pkg.qualified_name)
             prefix = "REZ_" + pkg.name.upper().replace('.', '_')
+
             executor.setenv(prefix + "_VERSION", str(pkg.version))
+            major_version = str(pkg.version[0] if len(pkg.version) >= 1 else '')
+            minor_version = str(pkg.version[1] if len(pkg.version) >= 2 else '')
+            patch_version = str(pkg.version[2] if len(pkg.version) >= 3 else '')
+            executor.setenv(prefix + "_MAJOR_VERSION", major_version)
+            executor.setenv(prefix + "_MINOR_VERSION", minor_version)
+            executor.setenv(prefix + "_PATCH_VERSION", patch_version)
+
             executor.setenv(prefix + "_BASE", pkg.base)
             executor.setenv(prefix + "_ROOT", pkg.root)
             bindings[pkg.name] = dict(version=VersionBinding(pkg.version),
                                       variant=VariantBinding(pkg))
-
-            # just provide major/minor/patch during builds
-            if self.building:
-                if len(pkg.version) >= 1:
-                    executor.setenv(prefix + "_MAJOR_VERSION", str(pkg.version[0]))
-                if len(pkg.version) >= 2:
-                    executor.setenv(prefix + "_MINOR_VERSION", str(pkg.version[1]))
-                if len(pkg.version) >= 3:
-                    executor.setenv(prefix + "_PATCH_VERSION", str(pkg.version[2]))
 
         # commands
         for attr in ("pre_commands", "commands", "post_commands"):
