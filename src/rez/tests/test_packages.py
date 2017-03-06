@@ -7,7 +7,7 @@ from rez.package_resources_ import package_release_keys
 from rez.package_repository import create_memory_package_repository
 from rez.tests.util import TestBase, TempdirMixin
 from rez.utils.formatting import PackageRequest
-from rez.utils.data_utils import SourceCode
+from rez.utils.sourcecode import SourceCode
 import rez.vendor.unittest2 as unittest
 from rez.vendor.version.version import Version
 import os.path
@@ -32,13 +32,14 @@ ALL_PACKAGES = set([
     'reorderable-2.0.5', 'reorderable-2.0.6', 'reorderable-2.1.0',
     'reorderable-2.1.1', 'reorderable-2.1.5', 'reorderable-2.2.0',
     'reorderable-2.2.1', 'reorderable-3.0.0', 'reorderable-3.1.1',
-    # packages from data/packages
+    # packages from data/packages/py_packages and .../yaml_packages
     'unversioned',
     'unversioned_py',
     'versioned-1.0', 'versioned-2.0', 'versioned-3.0',
     'variants_py-2.0',
     'single_unversioned',
     'single_versioned-3.5',
+    'late_binding-1.0',
     'multi-1.0', 'multi-1.1', 'multi-1.2', 'multi-2.0'])
 
 
@@ -124,6 +125,10 @@ class TestPackages(TestBase, TempdirMixin):
                                     "versioned", "2.0", "package.yaml")
         self.assertEqual(package.uri, expected_uri)
 
+        # a py-based package with late binding attribute functions
+        package = get_package("late_binding", "1.0")
+        self.assertEqual(package.tools, ["util"])
+
         # a 'combined' type package
         package = get_package("multi", "1.0")
         expected_uri = os.path.join(self.yaml_packages_path, "multi.yaml<1.0>")
@@ -186,22 +191,28 @@ class TestPackages(TestBase, TempdirMixin):
         data = package.validated_data()
         self.assertDictEqual(data, expected_data)
 
+        # a developer package with features such as expanding requirements
+        # and early-binding attribute functions
+        path = os.path.join(self.packages_base_path, "developer_dynamic")
+        package = get_developer_package(path)
+
+        self.assertEqual(package.description, "This.")
+        self.assertEqual(package.requires, [PackageRequest('versioned-3')])
+
     def test_6(self):
         """test variant iteration."""
-        expected_data_ = dict(
+        expected_data = dict(
             name="variants_py",
             version=Version("2.0"),
             description="package with variants",
             base=os.path.join(self.py_packages_path, "variants_py", "2.0"),
+            requires=[PackageRequest("python-2.7")],
             commands=SourceCode('env.PATH.append("{root}/bin")'))
 
         requires_ = ["platform-linux", "platform-osx"]
 
         package = get_package("variants_py", "2.0")
         for i, variant in enumerate(package.iter_variants()):
-            expected_data = expected_data_.copy()
-            expected_data["requires"] = [PackageRequest('python-2.7'),
-                                         PackageRequest(requires_[i])]
             data = variant.validated_data()
             self.assertDictEqual(data, expected_data)
             self.assertEqual(variant.index, i)

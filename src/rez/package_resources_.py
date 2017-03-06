@@ -1,8 +1,9 @@
 from rez.utils.resources import Resource
 from rez.utils.schema import Required, schema_keys
 from rez.utils.logging_ import print_warning
-from rez.utils.data_utils import cached_property, SourceCode, \
-    AttributeForwardMeta, LazyAttributeMeta
+from rez.utils.sourcecode import SourceCode
+from rez.utils.data_utils import cached_property, AttributeForwardMeta, \
+    LazyAttributeMeta
 from rez.utils.formatting import PackageRequest
 from rez.exceptions import PackageMetadataError, ResourceError
 from rez.config import config, Config, create_config
@@ -23,6 +24,18 @@ package_release_keys = (
     'previous_revision',
     'vcs')
 
+# package attributes that we don't install
+package_build_only_keys = (
+    "preprocess",
+)
+
+# package attributes that are rex-based functions
+package_rex_keys = (
+    "pre_commands",
+    "commands",
+    "post_commands"
+)
+
 
 #------------------------------------------------------------------------------
 # utility schemas
@@ -30,6 +43,16 @@ package_release_keys = (
 
 help_schema = Or(basestring,  # single help entry
                  [[basestring]])  # multiple help entries
+
+_is_late = And(SourceCode, lambda x: hasattr(x, "_late"))
+
+def late_bound(schema):
+    return Or(SourceCode, schema)
+
+# used when 'requires' is late bound
+late_requires_schema = Schema([
+    Or(PackageRequest, And(basestring, Use(PackageRequest)))
+])
 
 
 #------------------------------------------------------------------------------
@@ -56,19 +79,19 @@ package_base_schema_dict.update({
     Optional('authors'):                [basestring],
 
     # dependencies
-    Optional('requires'):               [PackageRequest],
-    Optional('build_requires'):         [PackageRequest],
-    Optional('private_build_requires'): [PackageRequest],
+    Optional('requires'):               late_bound([PackageRequest]),
+    Optional('build_requires'):         late_bound([PackageRequest]),
+    Optional('private_build_requires'): late_bound([PackageRequest]),
 
     # plugins
-    Optional('has_plugins'):            bool,
-    Optional('plugin_for'):             [basestring],
+    Optional('has_plugins'):            late_bound(bool),
+    Optional('plugin_for'):             late_bound([basestring]),
 
     # general
     Optional('uuid'):                   basestring,
     Optional('config'):                 Config,
-    Optional('tools'):                  [basestring],
-    Optional('help'):                   help_schema,
+    Optional('tools'):                  late_bound([basestring]),
+    Optional('help'):                   late_bound(help_schema),
 
     # commands
     Optional('pre_commands'):           SourceCode,
@@ -85,14 +108,17 @@ package_base_schema_dict.update({
     Optional('vcs'):                    basestring,
 
     # arbitrary fields
-    Optional(basestring):               object
+    Optional(basestring):               late_bound(object)
 })
 
 
 # package
 package_schema_dict = package_base_schema_dict.copy()
 package_schema_dict.update({
-    Optional("variants"):               [[PackageRequest]]
+    # deliberately not possible to late bind
+    Optional("variants"):               [[PackageRequest]],
+
+    Optional("preprocess"):             SourceCode
 })
 
 
@@ -122,12 +148,11 @@ _commands_schema = Or(SourceCode,       # commands as converted function
                       basestring,       # commands in text block
                       [basestring])     # old-style (rez-1) commands
 
+_function_schema = Or(SourceCode, callable)
 
 _package_request_schema = And(basestring, Use(PackageRequest))
 
-
 package_pod_schema_dict = base_resource_schema_dict.copy()
-
 
 large_string_dict = And(basestring, Use(lambda x: dedent(x).strip()))
 
@@ -138,23 +163,27 @@ package_pod_schema_dict.update({
     Optional('description'):            large_string_dict,
     Optional('authors'):                [basestring],
 
-    Optional('requires'):               [_package_request_schema],
-    Optional('build_requires'):         [_package_request_schema],
-    Optional('private_build_requires'): [_package_request_schema],
+    Optional('requires'):               late_bound([_package_request_schema]),
+    Optional('build_requires'):         late_bound([_package_request_schema]),
+    Optional('private_build_requires'): late_bound([_package_request_schema]),
+
+    # deliberately not possible to late bind
     Optional('variants'):               [[_package_request_schema]],
 
-    Optional('has_plugins'):            bool,
-    Optional('plugin_for'):             [basestring],
+    Optional('has_plugins'):            late_bound(bool),
+    Optional('plugin_for'):             late_bound([basestring]),
 
     Optional('uuid'):                   basestring,
     Optional('config'):                 And(dict,
                                             Use(lambda x: create_config(overrides=x))),
-    Optional('tools'):                  [basestring],
-    Optional('help'):                   help_schema,
+    Optional('tools'):                  late_bound([basestring]),
+    Optional('help'):                   late_bound(help_schema),
 
     Optional('pre_commands'):           _commands_schema,
     Optional('commands'):               _commands_schema,
     Optional('post_commands'):          _commands_schema,
+
+    Optional("preprocess"):             _function_schema,
 
     Optional("timestamp"):              int,
     Optional('revision'):               object,
@@ -165,7 +194,7 @@ package_pod_schema_dict.update({
     Optional('vcs'):                    basestring,
 
     # arbitrary keys
-    Optional(basestring):               object
+    Optional(basestring):               late_bound(object)
 })
 
 
@@ -339,9 +368,9 @@ class PackageResourceHelper(PackageResource):
             commands = convert_old_commands(commands)
 
         if isinstance(commands, basestring):
-            return SourceCode(commands)
+            return SourceCode(source=commands)
         elif callable(commands):
-            return SourceCode.from_function(commands)
+            return SourceCode(func=commands)
         else:
             return commands
 
@@ -364,7 +393,7 @@ class VariantResourceHelper(VariantResource):
     schema = variant_schema
 
     # forward Package attributes onto ourself
-    keys = schema_keys(package_schema) - set(["requires", "variants"])
+    keys = schema_keys(package_schema) - set(["variants"])
 
     def _uri(self):
         index = self.index
@@ -390,11 +419,6 @@ class VariantResourceHelper(VariantResource):
             return root
 
     @cached_property
-    def requires(self):
-        reqs = self.parent.requires or []
-        return reqs + self.variant_requires
-
-    @cached_property
     def variant_requires(self):
         index = self.index
         if index is None:
@@ -406,7 +430,6 @@ class VariantResourceHelper(VariantResource):
                 raise ResourceError(
                     "Unexpected error - variant %s cannot be found in its "
                     "parent package %s" % (self.uri, self.parent.uri))
-
 
     @property
     def wrapped(self):  # forward Package attributes onto ourself
