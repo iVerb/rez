@@ -179,7 +179,14 @@ class TestRelease(TestBase, TempdirMixin):
     def test_2_variant_add(self):
         """Test variant installation on release
         """
-        self._setup_release("variants")
+        orig_src_path = self.src_path
+        self.src_path = os.path.join(self.src_path, "variants")
+        try:
+            self._setup_release("variants")
+        finally:
+            # due to shell_dependent, this will run multiple times, don't
+            # want to add src_path/variants/variants
+            self.src_path = orig_src_path
 
         # make the stub file, set up the vcs
         stubfile = os.path.join(self.build_dir, ".stub")
