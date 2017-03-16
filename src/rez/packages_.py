@@ -9,7 +9,7 @@ from rez.utils.sourcecode import SourceCode
 from rez.utils.data_utils import cached_property, _missing
 from rez.utils.formatting import StringFormatMixin, StringFormatType
 from rez.utils.filesystem import is_subdirectory
-from rez.utils.schema import schema_keys
+from rez.utils.schema import schema_keys, get_cls_sub_schema
 from rez.utils.resources import ResourceHandle, ResourceWrapper
 from rez.exceptions import PackageFamilyNotFoundError, ResourceError
 from rez.vendor.version.version import VersionRange
@@ -45,7 +45,7 @@ class PackageRepositoryResourceWrapper(ResourceWrapper, StringFormatMixin):
             return self._wrap_forwarded(name, value)
         else:
             raise AttributeError("%s instance has no attribute '%s'"
-                                 % type(self).__name__, name)
+                                 % (type(self).__name__, name))
 
     def set_context(self, context):
         self.context = context
@@ -63,6 +63,8 @@ class PackageRepositoryResourceWrapper(ResourceWrapper, StringFormatMixin):
                 value_ = self._eval_late_binding(value)
 
                 schema = self.late_bind_schemas.get(key)
+                if schema is None:
+                    schema = get_cls_sub_schema(self, key)
                 if schema is not None:
                     value_ = schema.validate(value_)
 

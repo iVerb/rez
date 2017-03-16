@@ -13,6 +13,7 @@ from rez.utils.data_utils import cached_property
 from rez.utils.formatting import is_valid_package_name, PackageRequest
 from rez.utils.resources import cached_property
 from rez.utils.sourcecode import SourceCode
+from rez.utils.schema import get_cls_sub_schema
 from rez.serialise import load_from_file, FileFormat
 from rez.config import config
 from rez.utils.memcached import memcached, pool_memcached_connections
@@ -230,9 +231,9 @@ class FileSystemCombinedPackageFamilyResource(PackageFamilyResource):
 
     schema = Schema({
         Optional("versions"):
-            late_bound([And(basestring, Use(Version))]),
+            late_bound([Or(Version, And(basestring, Use(Version)))]),
         Optional("version_overrides"):
-            late_bound({And(basestring, Use(VersionRange)): dict}),
+            late_bound({Or(VersionRange, And(Or(basestring, Version), Use(VersionRange))): dict}),
     })
 
     @property
@@ -253,13 +254,15 @@ class FileSystemCombinedPackageFamilyResource(PackageFamilyResource):
         except OSError:
             return 0
 
-    # # probably a better way to do this, but this was fast to implement...
     def _get_late_bound(self, attr):
         # if the class has a property for, ie, "versions" already, then
         # LazyAttributeMeta will create a property called _versions
         result = getattr(self, '_' + attr)
         if isinstance(result, SourceCode):
             result = result.exec_late(self)
+            schema = get_cls_sub_schema(self, attr)
+            if schema is not None:
+                result = schema.validate(result)
         return result
 
     @cached_property
